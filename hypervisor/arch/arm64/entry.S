@@ -18,9 +18,6 @@
 #include <asm/percpu.h>
 #include <asm/jailhouse_hypercall.h>
 
-#define LINUX_HVC_GET_VECTORS		0
-#define LINUX_HVC_SET_VECTORS		1
-
 /* x11 must contain the virt-to-phys offset */
 .macro virt2phys, register
 	add	\register, \register, x11
@@ -53,7 +50,7 @@ arch_entry:
 	mov	x18, x30
 
 	/* keep the Linux stub EL2 vectors for later */
-	mov	x0, #LINUX_HVC_GET_VECTORS
+	mov	x0, xzr
 	hvc	#0
 	mov	x16, x0
 
@@ -100,9 +97,8 @@ arch_entry:
 	 */
 
 	/* install bootstrap_vectors */
-	mov	x0, #LINUX_HVC_SET_VECTORS
-	ldr	x1, =bootstrap_vectors
-	virt2phys x1
+	ldr	x0, =bootstrap_vectors
+	virt2phys x0
 	hvc	#0
 
 	hvc	#0	/* bootstrap vectors enter EL2 at el2_entry */
