@@ -10,7 +10,7 @@
 # the COPYING file in the top-level directory.
 #
 
-subdir-y := dts
+subdir-y := #dts
 
 LINUXINCLUDE := -I$(src)/../hypervisor/arch/$(SRCARCH)/include \
 		-I$(src)/../hypervisor/include
