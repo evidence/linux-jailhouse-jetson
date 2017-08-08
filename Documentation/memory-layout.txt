@@ -32,6 +32,18 @@ Size: as defined in the system configuration (see hypervisor_memory.size) [1]
         | Data Segment                         |
         |                                      |
         +--------------------------------------+
+        | Init Array                           |
+        |                                      |
+        +--------------------------------------+
+        | Bootstrap Page Tables (only ARM64)   |
+        |                                      |
+        +--------------------------------------+
+        | Trampoline Code (only ARM and ARM64) |
+        |                                      |
+        +--------------------------------------+
+        | Console Page                         |
+        |                                      |
+        +--------------------------------------+
         | BSS Segment                          |
         |                                      |
         +--------------------------------------+
@@ -77,5 +89,5 @@ Size: PAGE_SIZE * NUM_REMAP_BITMAP_PAGES * PAGE_SIZE * 8
 References
 ----------
 
-[1] Documentation/configuration-format.txt
+[1] Documentation/configuration-format.md
 [2] Documentation/bootstrap-interface.txt

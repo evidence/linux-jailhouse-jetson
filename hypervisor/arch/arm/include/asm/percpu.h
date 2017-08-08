@@ -30,7 +30,10 @@
 	(BITS_PER_LONG - __builtin_clzl(sizeof(struct per_cpu) - 1))
 
 struct per_cpu {
+	/** Stack used while in hypervisor mode. */
 	u8 stack[PAGE_SIZE];
+
+	/** Linux stack pointer, used for handover to the hypervisor. */
 	unsigned long linux_sp;
 	unsigned long linux_ret;
 	unsigned long linux_flags;
@@ -45,8 +48,14 @@ struct per_cpu {
 	unsigned int pending_irqs_head;
 	/* removal from the ring happens lockless, thus tail is volatile */
 	volatile unsigned int pending_irqs_tail;
-	/* Only GICv3: physical redistributor base */
-	void *gicr_base;
+
+	union {
+		/** Only GICv2: per-cpu initialization completed. */
+		bool gicc_initialized;
+		/** Only GICv3: physical redistributor base. When non-NULL,
+		 * per-cpu initialization completed. */
+		void *gicr_base;
+	};
 
 	struct cell *cell;
 

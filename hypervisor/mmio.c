@@ -31,7 +31,8 @@ int mmio_cell_init(struct cell *cell)
 	unsigned int n;
 	void *pages;
 
-	cell->max_mmio_regions = arch_mmio_count_regions(cell);
+	cell->max_mmio_regions = arch_mmio_count_regions(cell) +
+		pci_mmio_count_regions(cell);
 
 	for_each_mem_region(mem, cell->config, n)
 		if (JAILHOUSE_MEMORY_IS_SUBPAGE(mem))
@@ -170,7 +171,7 @@ void mmio_region_unregister(struct cell *cell, unsigned long start)
 
 	spin_lock(&cell->mmio_region_lock);
 
-	index = find_region(cell, start, 0);
+	index = find_region(cell, start, 1);
 	if (index >= 0) {
 		for (/* empty */; index < cell->num_mmio_regions; index++)
 			copy_region(cell, index + 1, index);
@@ -312,7 +313,7 @@ static enum mmio_result mmio_handle_subpage(void *arg, struct mmio_access *mmio)
 	return MMIO_HANDLED;
 
 invalid_access:
-	panic_printk("FATAL: Invalid MMIO %s, address: %x, size: %x\n",
+	panic_printk("FATAL: Invalid MMIO %s, address: %lx, size: %x\n",
 		     mmio->is_write ? "write" : "read",
 		     (unsigned long)mem->phys_start + mmio->address,
 		     mmio->size);

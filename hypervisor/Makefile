@@ -1,7 +1,7 @@
 #
 # Jailhouse, a Linux-based partitioning hypervisor
 #
-# Copyright (c) Siemens AG, 2013
+# Copyright (c) Siemens AG, 2013-2017
 # Copyright (c) Valentine Sinitsyn, 2014
 #
 # Authors:
@@ -16,49 +16,34 @@
 # Copyright (c) Linux kernel developers, 2014
 #
 
-LINUXINCLUDE := -I$(src)/arch/$(SRCARCH)/include -I$(src)/include
+-include $(GEN_CONFIG_MK)
+
+LINUXINCLUDE := -I$(src)/arch/$(SRCARCH)/include \
+		-I$(src)/arch/$(SRCARCH)/include/generated \
+		-I$(src)/include
 KBUILD_CFLAGS := -g -Os -Wall -Wstrict-prototypes -Wtype-limits \
 		 -Wmissing-declarations -Wmissing-prototypes \
 		 -fno-strict-aliasing -fno-pic -fno-common \
 		 -fno-stack-protector -fno-builtin-ffsl
 
-ifeq ($(SRCARCH),x86)
-KBUILD_CFLAGS += -mcmodel=kernel -mno-sse -mno-mmx -mno-sse2 -mno-3dnow
-KBUILD_CFLAGS += $(call cc-option,-mno-avx,)
-KBUILD_CPPFLAGS += -m64
-BUILD_VARIANTS := amd intel
+include $(src)/arch/$(SRCARCH)/Makefile
+
+ifneq ($(wildcard $(INC_CONFIG_H)),)
+KBUILD_CFLAGS += -include $(INC_CONFIG_H)
 endif
 
-ifeq ($(SRCARCH),arm)
-KBUILD_CFLAGS += -marm
+GCOV_PROFILE := n
+
+CORE_OBJECTS = setup.o printk.o paging.o control.o lib.o mmio.o pci.o ivshmem.o
+CORE_OBJECTS += uart.o uart-8250.o
+
+ifdef CONFIG_JAILHOUSE_GCOV
+CORE_OBJECTS += gcov.o
 endif
+ccflags-$(CONFIG_JAILHOUSE_GCOV) += -fprofile-arcs -ftest-coverage
+clean-files += *.gcda arch/*/.*.gcda
 
-ifneq ($(wildcard $(obj)/include/jailhouse/config.h),)
-KBUILD_CFLAGS += -include $(obj)/include/jailhouse/config.h
-endif
-
-CORE_OBJECTS = setup.o printk.o paging.o control.o lib.o mmio.o
-
-define filechk_config_mk
-(									\
-	echo "\$$(foreach config,\$$(filter CONFIG_%,		\
-		\$$(.VARIABLES)), \$$(eval undefine \$$(config)))";	\
-	if [ -f $(src)/include/jailhouse/config.h ]; then		\
-		sed -e "/^#define \([^[:space:]]*\)[[:space:]]*1/!d"	\
-		    -e "s/^#define \([^[:space:]]*\)[[:space:]]*1/\1=y/" \
-			$(src)/include/jailhouse/config.h;		\
-	fi								\
-)
-endef
-
-$(obj)/include/generated/config.mk: Makefile FORCE
-	$(call filechk,config_mk)
-
-define filechk_version
-	$(src)/../scripts/gen_version_h $(src)/..
-endef
-
-clean-dirs += include/generated/
+clean-dirs := arch/$(SRCARCH)/include/generated
 
 define sed-y
 	"/^=>/{s:=>#\(.*\):/* \1 */:; \
@@ -84,41 +69,34 @@ define cmd_defines
 	 echo "#endif" ) > $@
 endef
 
-defines-file := include/generated/asm-defines.h
+ASM_DEFINES_H := arch/$(SRCARCH)/include/generated/asm/asm-defines.h
 
-targets := $(defines-file) arch/$(SRCARCH)/asm-defines.s
+targets := $(ASM_DEFINES_H) arch/$(SRCARCH)/asm-defines.s
 
 $(obj)/arch/$(SRCARCH)/asm-defines.s: $(src)/arch/$(SRCARCH)/asm-defines.c
 	$(call if_changed_dep,cc_s_c)
 
-$(obj)/$(defines-file): $(obj)/arch/$(SRCARCH)/asm-defines.s
+$(obj)/$(ASM_DEFINES_H): $(obj)/arch/$(SRCARCH)/asm-defines.s
 	$(Q)mkdir -p $(dir $@)
 	$(call cmd,defines)
 
-$(obj)/include/generated/version.h: $(src)/Makefile FORCE
-	$(call filechk,version)
-
-$(foreach co,$(CORE_OBJECTS),\
-	$(eval $(obj)/$(co): $(obj)/$(defines-file)))
-
-$(obj)/setup.o: $(obj)/include/generated/version.h
-
-arch-builtin: $(obj)/$(defines-file) $(obj)/include/generated/config.mk FORCE
-	$(Q)$(MAKE) $(build)=$(obj)/arch/$(SRCARCH) \
-		CONFIG_MK=$(obj)/include/generated/config.mk
+# Do not generate files by creating dependencies if we are cleaning up
+ifeq ($(filter %/Makefile.clean,$(MAKEFILE_LIST)),)
+$(obj)/arch/$(SRCARCH): $(obj)/$(ASM_DEFINES_H)
+endif
 
 always :=
+
+subdir-y := arch/$(SRCARCH)
 
 define BUILD_JAILHOUSE_template
 always += jailhouse$(1).bin
 
+$$(obj)/arch/$$(SRCARCH)/built-in$(1).o: $$(obj)/arch/$$(SRCARCH)
+
 hypervisor$(1)-y := $$(CORE_OBJECTS) arch/$$(SRCARCH)/built-in$(1).o \
 	hypervisor.lds
 targets += $$(hypervisor$(1)-y)
-
-# Need fake recipe here so make will consider this a volatile target
-$$(obj)/arch/$$(SRCARCH)/built-in$(1).o: arch-builtin
-	@
 
 HYPERVISOR$(1)_OBJS = $$(addprefix $$(obj)/,$$(hypervisor$(1)-y))
 
@@ -141,5 +119,3 @@ $(foreach variant,$(BUILD_VARIANTS),\
 else
 $(eval $(call BUILD_JAILHOUSE_template,))
 endif
-
-.PHONY: arch-builtin

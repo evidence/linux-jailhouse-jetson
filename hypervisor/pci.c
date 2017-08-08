@@ -1,7 +1,7 @@
 /*
  * Jailhouse, a Linux-based partitioning hypervisor
  *
- * Copyright (c) Siemens AG, 2014, 2015
+ * Copyright (c) Siemens AG, 2014-2016
  *
  * Authors:
  *  Ivan Kolchin <ivan.kolchin@siemens.com>
@@ -12,9 +12,11 @@
  */
 
 #include <jailhouse/control.h>
+#include <jailhouse/ivshmem.h>
 #include <jailhouse/mmio.h>
 #include <jailhouse/pci.h>
 #include <jailhouse/printk.h>
+#include <jailhouse/string.h>
 #include <jailhouse/utils.h>
 
 #define MSIX_VECTOR_CTRL_DWORD		3
@@ -44,7 +46,8 @@ struct pci_cfg_control {
 /* Type 1: Endpoints */
 static const struct pci_cfg_control endpoint_write[PCI_CONFIG_HEADER_SIZE] = {
 	[0x04/4] = {PCI_CONFIG_ALLOW,  0xffffffff}, /* Command, Status */
-	[0x0c/4] = {PCI_CONFIG_ALLOW,  0xff00ffff}, /* BIST, Lat., Cacheline */
+	[0x0c/4] = {PCI_CONFIG_ALLOW,  0xffffffff}, /* BIST, Header Type (r/o),
+						       Latency, Cacheline */
 	[0x30/4] = {PCI_CONFIG_RDONLY, 0xffffffff}, /* ROM BAR */
 	[0x3c/4] = {PCI_CONFIG_ALLOW,  0x000000ff}, /* Int Line */
 };
@@ -54,7 +57,8 @@ static const struct pci_cfg_control endpoint_write[PCI_CONFIG_HEADER_SIZE] = {
  *       perform them on bus rescans. */
 static const struct pci_cfg_control bridge_write[PCI_CONFIG_HEADER_SIZE] = {
 	[0x04/4] = {PCI_CONFIG_ALLOW,  0xffffffff}, /* Command, Status */
-	[0x0c/4] = {PCI_CONFIG_ALLOW,  0xff00ffff}, /* BIST, Lat., Cacheline */
+	[0x0c/4] = {PCI_CONFIG_ALLOW,  0xffffffff}, /* BIST, Header Type (r/o),
+						       Latency, Cacheline */
 	[0x1c/4] = {PCI_CONFIG_RDONLY, 0x0000ffff}, /* I/O Limit & Base */
 	[0x20/4 ...      /* Memory Limit/Base, Prefetch Memory Limit/Base, */
 	 0x30/4] = {PCI_CONFIG_RDONLY, 0xffffffff}, /* I/O Limit & Base */
@@ -71,7 +75,7 @@ unsigned int pci_mmio_count_regions(struct cell *cell)
 		jailhouse_cell_pci_devices(cell->config);
 	unsigned int n, regions = 0;
 
-	if (system_config->platform_info.x86.mmconfig_base)
+	if (system_config->platform_info.pci_mmconfig_base)
 		regions++;
 
 	for (n = 0; n < cell->config->num_pci_devices; n++)
@@ -225,7 +229,7 @@ enum pci_access pci_cfg_read_moderate(struct pci_device *device, u16 address,
 	}
 
 	if (device->info->type == JAILHOUSE_PCI_TYPE_IVSHMEM)
-		return pci_ivshmem_cfg_read(device, address, value);
+		return ivshmem_pci_cfg_read(device, address, value);
 
 	if (address < PCI_CONFIG_HEADER_SIZE)
 		return PCI_ACCESS_PERFORM;
@@ -308,7 +312,7 @@ enum pci_access pci_cfg_write_moderate(struct pci_device *device, u16 address,
 		switch (cfg_control.type) {
 		case PCI_CONFIG_ALLOW:
 			if (device->info->type == JAILHOUSE_PCI_TYPE_IVSHMEM)
-				return pci_ivshmem_cfg_write(device,
+				return ivshmem_pci_cfg_write(device,
 						address / 4, mask, value);
 			return PCI_ACCESS_PERFORM;
 		case PCI_CONFIG_RDONLY:
@@ -319,7 +323,7 @@ enum pci_access pci_cfg_write_moderate(struct pci_device *device, u16 address,
 	}
 
 	if (device->info->type == JAILHOUSE_PCI_TYPE_IVSHMEM)
-		return pci_ivshmem_cfg_write(device, address / 4, mask, value);
+		return ivshmem_pci_cfg_write(device, address / 4, mask, value);
 
 	cap = pci_find_capability(device, address);
 	if (!cap || !(cap->flags & JAILHOUSE_PCICAPS_WRITE))
@@ -358,11 +362,11 @@ enum pci_access pci_cfg_write_moderate(struct pci_device *device, u16 address,
  */
 int pci_init(void)
 {
-	mmcfg_start = system_config->platform_info.x86.mmconfig_base;
-	if (mmcfg_start != 0) {
-		end_bus = system_config->platform_info.x86.mmconfig_end_bus;
-		mmcfg_size = (end_bus + 1) * 256 * 4096;
+	mmcfg_start = system_config->platform_info.pci_mmconfig_base;
+	end_bus = system_config->platform_info.pci_mmconfig_end_bus;
+	mmcfg_size = (end_bus + 1) * 256 * 4096;
 
+	if (mmcfg_start != 0 && !system_config->platform_info.pci_is_virtual) {
 		pci_space = paging_map_device(mmcfg_start, mmcfg_size);
 		if (!pci_space)
 			return -ENOMEM;
@@ -420,37 +424,37 @@ static enum mmio_result pci_mmconfig_access_handler(void *arg,
 						    struct mmio_access *mmio)
 {
 	u32 reg_addr = mmio->address & 0xfff;
+	u16 bdf = mmio->address >> 12;
 	struct pci_device *device;
 	enum pci_access result;
 	u32 val;
 
-	/* access must be DWORD-aligned */
-	if (reg_addr & 0x3)
+	/* only up to 4-byte accesses supported */
+	if (mmio->size > 4)
 		goto invalid_access;
 
-	device = pci_get_assigned_device(this_cell(), mmio->address >> 12);
+	device = pci_get_assigned_device(this_cell(), bdf);
 
 	if (mmio->is_write) {
-		result = pci_cfg_write_moderate(device, reg_addr, 4,
+		result = pci_cfg_write_moderate(device, reg_addr, mmio->size,
 						mmio->value);
 		if (result == PCI_ACCESS_REJECT)
 			goto invalid_access;
-		if (result == PCI_ACCESS_PERFORM)
-			mmio_write32(pci_space + mmio->address, mmio->value);
 	} else {
-		result = pci_cfg_read_moderate(device, reg_addr, 4, &val);
-		if (result == PCI_ACCESS_PERFORM)
-			mmio->value = mmio_read32(pci_space + mmio->address);
-		else
+		result = pci_cfg_read_moderate(device, reg_addr, mmio->size,
+					       &val);
+		if (result != PCI_ACCESS_PERFORM)
 			mmio->value = val;
 	}
+	if (result == PCI_ACCESS_PERFORM)
+		mmio_perform_access(pci_space, mmio);
 
 	return MMIO_HANDLED;
 
 invalid_access:
 	panic_printk("FATAL: Invalid PCI MMCONFIG write, device %02x:%02x.%x, "
-		     "reg: %x\n", PCI_BDF_PARAMS(mmio->address >> 12),
-		     reg_addr);
+		     "reg: %x, size: %d\n", PCI_BDF_PARAMS(bdf), reg_addr,
+		     mmio->size);
 	return MMIO_ERROR;
 
 }
@@ -549,6 +553,42 @@ void pci_prepare_handover(void)
 	}
 }
 
+void pci_reset_device(struct pci_device *device)
+{
+	const struct jailhouse_pci_capability *cap;
+	unsigned int n;
+
+	memset(&device->msi_registers, 0, sizeof(device->msi_registers));
+	for (n = 0; n < device->info->num_msix_vectors; n++) {
+		device->msix_vectors[n].address = 0;
+		device->msix_vectors[n].data = 0;
+		device->msix_vectors[n].masked = 1;
+	}
+
+	if (device->info->type == JAILHOUSE_PCI_TYPE_IVSHMEM) {
+		ivshmem_reset(device);
+		return;
+	}
+
+	/*
+	 * Silence INTx of the physical device by setting the mask bit.
+	 * This is a deviation from the specified reset state.
+	 */
+	pci_write_config(device->info->bdf, PCI_CFG_COMMAND,
+			 PCI_CMD_INTX_OFF, 2);
+
+	for_each_pci_cap(cap, device, n) {
+		if (cap->id == PCI_CAP_MSI || cap->id == PCI_CAP_MSIX)
+			/* Disable MSI/MSI-X by clearing the control word. */
+			pci_write_config(device->info->bdf, cap->start+2, 0, 2);
+		if (cap->id == PCI_CAP_MSIX)
+			/* Mask each MSI-X vector also physically. */
+			for (n = 0; n < device->info->num_msix_vectors; n++)
+				mmio_write32(&device->msix_table[n].raw[3],
+					     device->msix_vectors[n].raw[3]);
+	}
+}
+
 static int pci_add_physical_device(struct cell *cell, struct pci_device *device)
 {
 	unsigned int n, pages, size = device->info->msix_region_size;
@@ -562,8 +602,10 @@ static int pci_add_physical_device(struct cell *cell, struct pci_device *device)
 						 PCI_CFG_BAR + n * 4, 4);
 
 	err = arch_pci_add_physical_device(cell, device);
+	if (err)
+		return err;
 
-	if (!err && device->info->msix_address) {
+	if (device->info->msix_address) {
 		device->msix_table =
 			paging_map_device(device->info->msix_address, size);
 		if (!device->msix_table) {
@@ -584,7 +626,12 @@ static int pci_add_physical_device(struct cell *cell, struct pci_device *device)
 		mmio_region_register(cell, device->info->msix_address, size,
 				     pci_msix_access_handler, device);
 	}
-	return err;
+
+	device->cell = cell;
+	if (cell != &root_cell)
+		pci_reset_device(device);
+
+	return 0;
 
 error_unmap_table:
 	paging_unmap_device(device->info->msix_address, device->msix_table,
@@ -596,11 +643,15 @@ error_remove_dev:
 
 static void pci_remove_physical_device(struct pci_device *device)
 {
+	struct cell *cell = device->cell;
+
 	printk("Removing PCI device %02x:%02x.%x from cell \"%s\"\n",
-	       PCI_BDF_PARAMS(device->info->bdf), device->cell->config->name);
+	       PCI_BDF_PARAMS(device->info->bdf), cell->config->name);
+
+	pci_reset_device(device);
 	arch_pci_remove_physical_device(device);
-	pci_write_config(device->info->bdf, PCI_CFG_COMMAND,
-			 PCI_CMD_INTX_OFF, 2);
+
+	device->cell = NULL;
 
 	if (!device->msix_table)
 		return;
@@ -613,7 +664,7 @@ static void pci_remove_physical_device(struct pci_device *device)
 			  PAGES(sizeof(union pci_msix_vector) *
 				device->info->num_msix_vectors));
 
-	mmio_region_unregister(device->cell, device->info->msix_address);
+	mmio_region_unregister(cell, device->info->msix_address);
 }
 
 /**
@@ -635,7 +686,7 @@ int pci_cell_init(struct cell *cell)
 	unsigned int ndev, ncap;
 	int err;
 
-	if (pci_space)
+	if (mmcfg_start != 0)
 		mmio_region_register(cell, mmcfg_start, mmcfg_size,
 				     pci_mmconfig_access_handler, NULL);
 
@@ -658,27 +709,21 @@ int pci_cell_init(struct cell *cell)
 		device->msix_vectors = device->msix_vector_array;
 
 		if (device->info->type == JAILHOUSE_PCI_TYPE_IVSHMEM) {
-			err = pci_ivshmem_init(cell, device);
+			err = ivshmem_init(cell, device);
 			if (err)
 				goto error;
-
-			device->cell = cell;
 
 			continue;
 		}
 
 		root_device = pci_get_assigned_device(&root_cell,
 						      dev_infos[ndev].bdf);
-		if (root_device) {
+		if (root_device)
 			pci_remove_physical_device(root_device);
-			root_device->cell = NULL;
-		}
 
 		err = pci_add_physical_device(cell, device);
 		if (err)
 			goto error;
-
-		device->cell = cell;
 
 		for_each_pci_cap(cap, device, ncap)
 			if (cap->id == PCI_CAP_MSI)
@@ -696,6 +741,15 @@ error:
 	return err;
 }
 
+void pci_cell_reset(struct cell *cell)
+{
+	struct pci_device *device;
+
+	for_each_configured_pci_device(device, cell)
+		if (device->cell)
+			pci_reset_device(device);
+}
+
 static void pci_return_device_to_root_cell(struct pci_device *device)
 {
 	struct pci_device *root_device;
@@ -707,8 +761,6 @@ static void pci_return_device_to_root_cell(struct pci_device *device)
 						    root_device) < 0)
 				printk("WARNING: Failed to re-assign PCI "
 				       "device to root cell\n");
-			else
-				root_device->cell = &root_cell;
 			break;
 		}
 }
@@ -735,7 +787,7 @@ void pci_cell_exit(struct cell *cell)
 	for_each_configured_pci_device(device, cell)
 		if (device->cell) {
 			if (device->info->type == JAILHOUSE_PCI_TYPE_IVSHMEM) {
-				pci_ivshmem_exit(device);
+				ivshmem_exit(device);
 			} else {
 				pci_remove_physical_device(device);
 				pci_return_device_to_root_cell(device);
@@ -775,7 +827,7 @@ void pci_config_commit(struct cell *cell_added_removed)
 					goto error;
 			}
 			if (device->info->type == JAILHOUSE_PCI_TYPE_IVSHMEM) {
-				err = pci_ivshmem_update_msix(device);
+				err = arch_ivshmem_update_msix(device);
 				if (err) {
 					cap = NULL;
 					goto error;

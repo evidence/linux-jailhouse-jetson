@@ -57,6 +57,12 @@ void arch_suspend_cpu(unsigned int cpu_id)
 	spin_unlock(&target_data->control_lock);
 
 	if (!target_suspended) {
+		/*
+		 * Send a maintenance signal (SGI_EVENT) to the target CPU.
+		 * Then, wait for the target CPU to enter the suspended state.
+		 * The target CPU, in turn, will leave the guest and handle the
+		 * request in the event loop.
+		 */
 		arm_cpu_kick(cpu_id);
 
 		while (!target_data->cpu_suspended)
@@ -187,7 +193,20 @@ bool arch_handle_phys_irq(struct per_cpu *cpu_data, u32 irqn,
 
 void arch_cell_reset(struct cell *cell)
 {
+	unsigned int first = first_cpu(cell->cpu_set);
+	unsigned int cpu;
+
+	/*
+	 * All CPUs but the first are initially suspended.
+	 * The first CPU starts at address 0.
+	 */
+	per_cpu(first)->cpu_on_entry = 0;
+	for_each_cpu_except(cpu, cell->cpu_set, first)
+		per_cpu(cpu)->cpu_on_entry = PSCI_INVALID_ADDRESS;
+
 	arm_cell_dcaches_flush(cell, DCACHE_INVALIDATE);
+
+	irqchip_cell_reset(cell);
 }
 
 /* Note: only supports synchronous flushing as triggered by config_commit! */
@@ -213,7 +232,9 @@ void __attribute__((noreturn)) arch_panic_stop(void)
 	__builtin_unreachable();
 }
 
+#ifndef CONFIG_CRASH_CELL_ON_PANIC
 void arch_panic_park(void) __attribute__((alias("arm_cpu_park")));
+#endif
 
 void arch_shutdown(void)
 {

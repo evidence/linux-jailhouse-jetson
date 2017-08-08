@@ -26,6 +26,7 @@ struct {
 } __attribute__((packed)) config = {
 	.cell = {
 		.signature = JAILHOUSE_CELL_DESC_SIGNATURE,
+		.revision = JAILHOUSE_CONFIG_REVISION,
 		.name = "tiny-demo",
 		.flags = JAILHOUSE_CELL_PASSIVE_COMMREG,
 
@@ -43,7 +44,7 @@ struct {
 
 	.mem_regions = {
 		/* RAM */ {
-			.phys_start = 0x3f100000,
+			.phys_start = 0x3ef00000,
 			.virt_start = 0,
 			.size = 0x00100000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |

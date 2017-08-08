@@ -1,7 +1,7 @@
 /*
  * Jailhouse, a Linux-based partitioning hypervisor
  *
- * Copyright (c) Siemens AG, 2013
+ * Copyright (c) Siemens AG, 2013-2017
  *
  * Authors:
  *  Jan Kiszka <jan.kiszka@siemens.com>
@@ -13,7 +13,7 @@
 #include <asm/paging.h>
 #include <asm/sections.h>
 
-#include <asm/jailhouse_hypercall.h>
+#include <asm/jailhouse_header.h>
 
 SECTIONS
 {
@@ -30,9 +30,22 @@ SECTIONS
 	. = ALIGN(16);
 	.data		: { *(.data) }
 
+	. = ALIGN(8);
+	__init_array_start = .;
+	.init_array	: { *(SORT(.init_array.*)) *(.init_array) }
+	__init_array_end = .;
+
 	ARCH_SECTIONS
 
-	. = ALIGN(16);
+	/* The console section shall only contain the hypervisor console. This
+	 * section and the next section must be aligned to PAGE_SIZE, as we
+	 * will map the console section, and only that section, as a whole page
+	 * to the root cell. */
+
+	. = ALIGN(PAGE_SIZE);
+	.console	: { *(.console) }
+
+	. = ALIGN(PAGE_SIZE);
 	.bss		: { *(.bss) }
 
 	. = ALIGN(PAGE_SIZE);

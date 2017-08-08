@@ -94,8 +94,8 @@ ioapic_translate_redir_entry(struct cell_ioapic *ioapic, unsigned int pin,
 	irq_msg.delivery_mode = entry.native.delivery_mode;
 	irq_msg.level_triggered = entry.native.level_triggered;
 	irq_msg.dest_logical = entry.native.dest_logical;
-	/* align redir_hint and dest_logical - required by iommu_map_interrupt */
-	irq_msg.redir_hint = irq_msg.dest_logical;
+	/* allow dest_logical under VT-d by enabling redirection */
+	irq_msg.redir_hint = 1;
 	irq_msg.valid = 1;
 	irq_msg.destination = entry.native.destination;
 
@@ -132,11 +132,7 @@ static int ioapic_virt_redir_write(struct cell_ioapic *ioapic,
 				     irq_msg);
 	// HACK for QEMU
 	if (result == -ENOSYS) {
-		/*
-		 * Upper 32 bits aren't written when the register is masked.
-		 * Write them unconditionally when unmasking to keep an entry
-		 * in the consistent state.
-		 */
+		/* see regular update below, lazy version */
 		ioapic_reg_write(phys_ioapic, reg | 1, entry.raw[1]);
 		ioapic_reg_write(phys_ioapic, reg, entry.raw[reg & 1]);
 		return 0;
@@ -148,6 +144,13 @@ static int ioapic_virt_redir_write(struct cell_ioapic *ioapic,
 	entry.remap.int_index15 = result >> 15;
 	entry.remap.remapped = 1;
 	entry.remap.int_index = result;
+
+	/*
+	 * Upper 32 bits weren't written physically if the entry was masked so
+	 * far. Write them unconditionally when setting the lower bits.
+	 */
+	if ((reg & 1) == 0)
+		ioapic_reg_write(phys_ioapic, reg | 1, entry.raw[1]);
 	ioapic_reg_write(phys_ioapic, reg, entry.raw[reg & 1]);
 
 	return 0;
@@ -336,7 +339,7 @@ static enum mmio_result ioapic_access_handler(void *arg,
 	}
 
 invalid_access:
-	panic_printk("FATAL: Invalid IOAPIC %s, reg: %x, index: %x\n",
+	panic_printk("FATAL: Invalid IOAPIC %s, reg: %lx, index: %x\n",
 		     mmio->is_write ? "write" : "read", mmio->address,
 		     ioapic->index_reg_val);
 	return MMIO_ERROR;
@@ -439,10 +442,11 @@ void ioapic_config_commit(struct cell *cell_added_removed)
 			entry = ioapic->phys_ioapic->shadow_redir_table[pin];
 			reg = IOAPIC_REDIR_TBL_START + pin * 2;
 
-			/* write high word first to preserve mask initially */
-			if (ioapic_virt_redir_write(ioapic, reg + 1,
-						    entry.raw[1]) < 0 ||
-			    ioapic_virt_redir_write(ioapic, reg,
+			/*
+			 * Writing the lower half will unmask the pin and
+			 * update the upper one as well.
+			 */
+			if (ioapic_virt_redir_write(ioapic, reg,
 						    entry.raw[0]) < 0) {
 				panic_printk("FATAL: Unsupported IOAPIC "
 					     "state, pin %d\n", pin);

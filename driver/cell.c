@@ -135,18 +135,12 @@ int jailhouse_cell_prepare_root(const struct jailhouse_cell_desc *cell_desc)
 
 void jailhouse_cell_register_root(void)
 {
-	jailhouse_pci_do_all_devices(root_cell, JAILHOUSE_PCI_TYPE_IVSHMEM,
-				     JAILHOUSE_PCI_ACTION_ADD);
-
 	root_cell->id = 0;
 	cell_register(root_cell);
 }
 
 void jailhouse_cell_delete_root(void)
 {
-	jailhouse_pci_do_all_devices(root_cell, JAILHOUSE_PCI_TYPE_IVSHMEM,
-				     JAILHOUSE_PCI_ACTION_DEL);
-
 	cell_delete(root_cell);
 }
 
@@ -176,6 +170,11 @@ int jailhouse_cmd_cell_create(struct jailhouse_cell_create __user *arg)
 	if (memcmp(config->signature, JAILHOUSE_CELL_DESC_SIGNATURE,
 		   sizeof(config->signature)) != 0) {
 		pr_err("jailhouse: Not a cell configuration\n");
+		err = -EINVAL;
+		goto kfree_config_out;
+	}
+	if (config->revision != JAILHOUSE_CONFIG_REVISION) {
+		pr_err("jailhouse: Configuration revision mismatch\n");
 		err = -EINVAL;
 		goto kfree_config_out;
 	}
@@ -212,6 +211,8 @@ int jailhouse_cmd_cell_create(struct jailhouse_cell_create __user *arg)
 		goto error_cell_delete;
 	}
 
+	/* Off-line each CPU assigned to the new cell and remove it from the
+	 * root cell's set. */
 	for_each_cpu(cpu, &cell->cpus_assigned) {
 		if (cpu_online(cpu)) {
 			err = cpu_down(cpu);

@@ -14,7 +14,6 @@
 
 #include <jailhouse/entry.h>
 #include <jailhouse/paging.h>
-#include <jailhouse/pci.h>
 #include <jailhouse/processor.h>
 #include <asm/apic.h>
 #include <asm/bitops.h>
@@ -75,7 +74,7 @@ int arch_init_early(void)
 	for (vector = IRQ_DESC_START; vector < NUM_IDT_DESC; vector++)
 		set_idt_int_gate(vector, (unsigned long)irq_entry);
 
-	return vcpu_vendor_init();
+	return vcpu_early_init();
 }
 
 /*
@@ -223,10 +222,6 @@ int arch_init_late(void)
 		return err;
 
 	err = map_root_memory_regions();
-	if (err)
-		return err;
-
-	err = pci_init();
 	if (err)
 		return err;
 

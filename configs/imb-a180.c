@@ -32,17 +32,24 @@ struct {
 } __attribute__((packed)) config = {
 	.header = {
 		.signature = JAILHOUSE_SYSTEM_SIGNATURE,
+		.revision = JAILHOUSE_CONFIG_REVISION,
 		.hypervisor_memory = {
 			.phys_start = 0x3b000000,
 			.size = 0x4000000,
 		},
 		.debug_console = {
-			.phys_start = 0x3f8,
+			.address = 0x3f8,
+			/* .divider = 0x1, */
+			.flags = JAILHOUSE_CON1_TYPE_8250 |
+				 JAILHOUSE_CON1_ACCESS_PIO |
+				 JAILHOUSE_CON2_TYPE_ROOTPAGE,
 		},
-		.platform_info.x86 = {
-			.mmconfig_base = 0xe0000000,
-			.mmconfig_end_bus = 0xff,
-			.pm_timer_address = 0x808,
+		.platform_info = {
+			.pci_mmconfig_base = 0xe0000000,
+			.pci_mmconfig_end_bus = 0xff,
+			.x86 = {
+				.pm_timer_address = 0x808,
+			},
 		},
 		.root_cell = {
 			.name = "IMB-A180",

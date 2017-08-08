@@ -27,6 +27,8 @@ extern u8 __page_pool[];
 /**
  * Offset between virtual and physical hypervisor addresses.
  *
+ * Jailhouse operates in a physically contiguous memory region,
+ * enabling offset-based address conversion.
  * @note Private, use page_map_hvirt2phys() or page_map_phys2hvirt() instead.
  */
 unsigned long page_offset;
@@ -593,7 +595,7 @@ int paging_init(void)
 	if (err)
 		return err;
 
-	if (system_config->debug_console.flags & JAILHOUSE_MEM_IO) {
+	if (CON1_IS_MMIO(system_config->debug_console.flags)) {
 		vaddr = (unsigned long)hypervisor_header.debug_console_base;
 		/* check if console overlaps remapping region */
 		if (vaddr + system_config->debug_console.size >= REMAP_BASE &&
@@ -601,8 +603,19 @@ int paging_init(void)
 			return trace_error(-EINVAL);
 
 		err = paging_create(&hv_paging_structs,
-				    system_config->debug_console.phys_start,
+				    system_config->debug_console.address,
 				    system_config->debug_console.size, vaddr,
+				    PAGE_DEFAULT_FLAGS | PAGE_FLAG_DEVICE,
+				    PAGING_NON_COHERENT);
+		if (err)
+			return err;
+	}
+
+	vaddr = (unsigned long)hypervisor_header.debug_clock_reg;
+	if (vaddr) {
+		err = paging_create(&hv_paging_structs,
+				    system_config->debug_console.clock_reg,
+				    1, vaddr,
 				    PAGE_DEFAULT_FLAGS | PAGE_FLAG_DEVICE,
 				    PAGING_NON_COHERENT);
 		if (err)
@@ -623,7 +636,7 @@ int paging_init(void)
  */
 void paging_dump_stats(const char *when)
 {
-	printk("Page pool usage %s: mem %d/%d, remap %d/%d\n", when,
+	printk("Page pool usage %s: mem %ld/%ld, remap %ld/%ld\n", when,
 	       mem_pool.used_pages, mem_pool.pages,
 	       remap_pool.used_pages, remap_pool.pages);
 }

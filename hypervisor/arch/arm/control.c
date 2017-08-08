@@ -17,8 +17,8 @@
 #include <jailhouse/string.h>
 #include <asm/control.h>
 #include <asm/irqchip.h>
+#include <asm/mach.h>
 #include <asm/psci.h>
-#include <asm/smp.h>
 #include <asm/sysregs.h>
 
 void arm_cpu_reset(unsigned long pc)
@@ -101,13 +101,20 @@ void arm_cpu_reset(unsigned long pc)
 	irqchip_cpu_reset(cpu_data);
 }
 
+#ifdef CONFIG_CRASH_CELL_ON_PANIC
+void arch_panic_park(void)
+{
+	arm_write_banked_reg(ELR_hyp, 0);
+}
+#endif
+
 static void arch_dump_exit(struct registers *regs, const char *reason)
 {
 	unsigned long pc;
 	unsigned int n;
 
 	arm_read_banked_reg(ELR_hyp, pc);
-	panic_printk("Unhandled HYP %s exit at 0x%x\n", reason, pc);
+	panic_printk("Unhandled HYP %s exit at 0x%lx\n", reason, pc);
 	for (n = 0; n < NUM_USR_REGS; n++)
 		panic_printk("r%d:%s 0x%08lx%s", n, n < 10 ? " " : "",
 			     regs->usr[n], n % 4 == 3 ? "\n" : "  ");
@@ -125,7 +132,7 @@ static void arch_dump_abt(bool is_data)
 	else
 		arm_read_sysreg(HIFAR, hxfar);
 
-	panic_printk("Physical address: 0x%08lx ESR: 0x%08x\n", hxfar, esr);
+	panic_printk("Physical address: 0x%08x ESR: 0x%08x\n", hxfar, esr);
 }
 
 struct registers* arch_handle_exit(struct per_cpu *cpu_data,
@@ -192,12 +199,8 @@ int arch_cell_create(struct cell *cell)
 	 * Generate a virtual CPU id according to the position of each CPU in
 	 * the cell set
 	 */
-	for_each_cpu(cpu, cell->cpu_set) {
-		per_cpu(cpu)->cpu_on_entry =
-			(virt_id == 0) ? 0 : PSCI_INVALID_ADDRESS;
-		per_cpu(cpu)->virt_id = virt_id;
-		virt_id++;
-	}
+	for_each_cpu(cpu, cell->cpu_set)
+		per_cpu(cpu)->virt_id = virt_id++;
 	cell->arch.last_virt_id = virt_id - 1;
 
 	err = irqchip_cell_init(cell);
@@ -206,7 +209,7 @@ int arch_cell_create(struct cell *cell)
 		return err;
 	}
 
-	smp_cell_init(cell);
+	mach_cell_init(cell);
 
 	return 0;
 }
@@ -227,8 +230,7 @@ void arch_cell_destroy(struct cell *cell)
 		percpu->cpu_on_entry = PSCI_INVALID_ADDRESS;
 	}
 
-	smp_cell_exit(cell);
-
+	mach_cell_exit(cell);
 	irqchip_cell_exit(cell);
 
 	arm_paging_cell_destroy(cell);

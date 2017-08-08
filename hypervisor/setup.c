@@ -1,7 +1,7 @@
 /*
  * Jailhouse, a Linux-based partitioning hypervisor
  *
- * Copyright (c) Siemens AG, 2013-2016
+ * Copyright (c) Siemens AG, 2013-2017
  *
  * Authors:
  *  Jan Kiszka <jan.kiszka@siemens.com>
@@ -13,6 +13,7 @@
 #include <jailhouse/processor.h>
 #include <jailhouse/printk.h>
 #include <jailhouse/entry.h>
+#include <jailhouse/gcov.h>
 #include <jailhouse/mmio.h>
 #include <jailhouse/paging.h>
 #include <jailhouse/control.h>
@@ -41,11 +42,17 @@ static void init_early(unsigned int cpu_id)
 	system_config = (struct jailhouse_system *)
 		(JAILHOUSE_BASE + core_and_percpu_size);
 
+	if (CON2_TYPE(system_config->debug_console.flags) ==
+	    JAILHOUSE_CON2_TYPE_ROOTPAGE)
+		virtual_console = true;
+
 	arch_dbg_write_init();
 
 	printk("\nInitializing Jailhouse hypervisor %s on CPU %d\n",
 	       JAILHOUSE_VERSION, cpu_id);
 	printk("Code location: %p\n", __text_start);
+
+	gcov_init();
 
 	error = paging_init();
 	if (error)
@@ -65,15 +72,22 @@ static void init_early(unsigned int cpu_id)
 	 * Back the region of the hypervisor core and per-CPU page with empty
 	 * pages for Linux. This allows to fault-in the hypervisor region into
 	 * Linux' page table before shutdown without triggering violations.
+	 *
+	 * Allow read access to the console page, if the hypervisor has the
+	 * debug console flag JAILHOUSE_CON2_TYPE_ROOTPAGE set.
 	 */
 	hyp_phys_start = system_config->hypervisor_memory.phys_start;
 	hyp_phys_end = hyp_phys_start + system_config->hypervisor_memory.size;
 
-	hv_page.phys_start = paging_hvirt2phys(empty_page);
 	hv_page.virt_start = hyp_phys_start;
 	hv_page.size = PAGE_SIZE;
 	hv_page.flags = JAILHOUSE_MEM_READ;
 	while (hv_page.virt_start < hyp_phys_end) {
+		if (virtual_console &&
+		    hv_page.virt_start == paging_hvirt2phys(&console))
+			hv_page.phys_start = paging_hvirt2phys(&console);
+		else
+			hv_page.phys_start = paging_hvirt2phys(empty_page);
 		error = arch_map_memory_region(&root_cell, &hv_page);
 		if (error)
 			return;
@@ -139,11 +153,15 @@ static void init_late(void)
 	for_each_cpu(cpu, root_cell.cpu_set)
 		expected_cpus++;
 	if (hypervisor_header.online_cpus != expected_cpus) {
-		error = -EINVAL;
+		error = trace_error(-EINVAL);
 		return;
 	}
 
 	error = arch_init_late();
+	if (error)
+		return;
+
+	error = pci_init();
 	if (error)
 		return;
 
@@ -152,6 +170,10 @@ static void init_late(void)
 	paging_dump_stats("after late setup");
 }
 
+/*
+ * This is the entry point, called by the Linux driver on each CPU
+ * when initializing Jailhouse.
+ */
 int entry(unsigned int cpu_id, struct per_cpu *cpu_data)
 {
 	static volatile bool activate;
@@ -162,6 +184,8 @@ int entry(unsigned int cpu_id, struct per_cpu *cpu_data)
 	spin_lock(&init_lock);
 
 	if (master_cpu_id == -1) {
+		/* Only the master CPU, the first to enter this
+		 * function, performs system-wide initializations. */
 		master = true;
 		init_early(cpu_id);
 	}
@@ -191,7 +215,7 @@ int entry(unsigned int cpu_id, struct per_cpu *cpu_data)
 
 	if (error) {
 		if (master)
-			arch_shutdown();
+			shutdown();
 		arch_cpu_restore(cpu_data, error);
 		return error;
 	}
@@ -210,4 +234,5 @@ hypervisor_header = {
 	.core_size = (unsigned long)__page_pool - JAILHOUSE_BASE,
 	.percpu_size = sizeof(struct per_cpu),
 	.entry = arch_entry - JAILHOUSE_BASE,
+	.console_page = (unsigned long)&console - JAILHOUSE_BASE,
 };

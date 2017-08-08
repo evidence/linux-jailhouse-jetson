@@ -1,7 +1,7 @@
 /*
  * Jailhouse, a Linux-based partitioning hypervisor
  *
- * Copyright (c) Siemens AG, 2013
+ * Copyright (c) Siemens AG, 2013-2017
  *
  * Authors:
  *  Jan Kiszka <jan.kiszka@siemens.com>
@@ -103,13 +103,12 @@
 
 union x86_msi_vector {
 	struct {
-		u32 unused:2,
+		u64 unused:2,
 		    dest_logical:1,
 		    redir_hint:1,
 		    reserved1:8,
 		    destination:8,
-		    address:12;
-		u32 reserved2;
+		    address:44;
 		u32 vector:8,
 		    delivery_mode:3,
 		    reserved:21;
@@ -171,10 +170,6 @@ bool x2apic_handle_write(void);
 void x2apic_handle_read(void);
 
 u32 x2apic_filter_logical_dest(struct cell *cell, u32 destination);
-
-struct apic_irq_message
-pci_translate_msi_vector(struct pci_device *device, unsigned int vector,
-			 unsigned int legacy_vectors, union x86_msi_vector msi);
 
 /** @} */
 #endif /* !_JAILHOUSE_ASM_APIC_H */

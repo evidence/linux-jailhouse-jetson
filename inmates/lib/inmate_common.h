@@ -35,13 +35,13 @@ typedef enum { true = 1, false = 0 } bool;
 
 #define comm_region	((struct jailhouse_comm_region *)COMM_REGION_BASE)
 
-extern unsigned int printk_uart_base;
 void printk(const char *fmt, ...);
 
 void *memset(void *s, int c, unsigned long n);
 void *memcpy(void *d, const void *s, unsigned long n);
 unsigned long strlen(const char *s);
 int strncmp(const char *s1, const char *s2, unsigned long n);
+int strcmp(const char *s1, const char *s2);
 
 const char *cmdline_parse_str(const char *param, char *value_buffer,
 			      unsigned long buffer_size,
@@ -50,7 +50,7 @@ long long cmdline_parse_int(const char *param, long long default_value);
 bool cmdline_parse_bool(const char *param);
 
 #define CMDLINE_BUFFER(size) \
-	const char cmdline[size] __attribute__((section(".cmdline")));
+	const char cmdline[size] __attribute__((section(".cmdline")))
 
 void inmate_main(void);
 

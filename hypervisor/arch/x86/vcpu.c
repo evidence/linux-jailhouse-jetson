@@ -26,6 +26,34 @@
 #include <asm/percpu.h>
 #include <asm/vcpu.h>
 
+/* This page is mapped so the code begins at 0x000ffff0 */
+static u8 __attribute__((aligned(PAGE_SIZE))) parking_code[PAGE_SIZE] = {
+	[0xff0] = 0xfa, /* 1: cli */
+	[0xff1] = 0xf4, /*    hlt */
+	[0xff2] = 0xeb,
+	[0xff3] = 0xfc  /*    jmp 1b */
+};
+
+struct paging_structures parking_pt;
+
+int vcpu_early_init(void)
+{
+	int err;
+
+	err = vcpu_vendor_early_init();
+	if (err)
+		return err;
+
+	/* Map guest parking code (shared between cells and CPUs) */
+	parking_pt.root_table = page_alloc(&mem_pool, 1);
+	if (!parking_pt.root_table)
+		return -ENOMEM;
+	return paging_create(&parking_pt, paging_hvirt2phys(parking_code),
+			     PAGE_SIZE, 0x000ff000,
+			     PAGE_READONLY_FLAGS | PAGE_FLAG_US,
+			     PAGING_NON_COHERENT);
+}
+
 /* Can be overridden in vendor-specific code if needed */
 const u8 *vcpu_get_inst_bytes(const struct guest_paging_structures *pg_structs,
 			      unsigned long pc, unsigned int *size)
@@ -153,7 +181,7 @@ void vcpu_handle_hypercall(void)
 	guest_regs->rax = hypercall(code, guest_regs->rdi & arg_mask,
 				    guest_regs->rsi & arg_mask);
 	if (guest_regs->rax == -ENOSYS)
-		printk("CPU %d: Unknown hypercall %d, RIP: %p\n",
+		printk("CPU %d: Unknown hypercall %ld, RIP: 0x%016llx\n",
 		       this_cpu_id(), code,
 		       x_state.rip - X86_INST_LEN_HYPERCALL);
 
@@ -193,8 +221,8 @@ bool vcpu_handle_mmio_access(void)
 {
 	union registers *guest_regs = &this_cpu_data()->guest_regs;
 	enum mmio_result result = MMIO_UNHANDLED;
-	struct mmio_access mmio = {.size = 4};
 	struct guest_paging_structures pg_structs;
+	struct mmio_access mmio = {.size = 0};
 	struct vcpu_mmio_intercept intercept;
 	struct vcpu_execution_state x_state;
 	struct mmio_instruction inst;
@@ -206,7 +234,7 @@ bool vcpu_handle_mmio_access(void)
 		goto invalid_access;
 
 	inst = x86_mmio_parse(x_state.rip, &pg_structs, intercept.is_write);
-	if (!inst.inst_len || inst.access_size != 4)
+	if (!inst.inst_len)
 		goto invalid_access;
 
 	mmio.is_write = intercept.is_write;
@@ -214,6 +242,8 @@ bool vcpu_handle_mmio_access(void)
 		mmio.value = guest_regs->by_index[inst.reg_num];
 
 	mmio.address = intercept.phys_addr;
+	mmio.size = inst.access_size;
+
 	result = mmio_handle_access(&mmio);
 	if (result == MMIO_HANDLED) {
 		if (!mmio.is_write)
@@ -225,9 +255,10 @@ bool vcpu_handle_mmio_access(void)
 invalid_access:
 	/* report only unhandled access failures */
 	if (result == MMIO_UNHANDLED)
-		panic_printk("FATAL: Invalid MMIO/RAM %s, addr: %p\n",
+		panic_printk("FATAL: Invalid MMIO/RAM %s, "
+			     "addr: 0x%016llx size: %d\n",
 			     intercept.is_write ? "write" : "read",
-			     intercept.phys_addr);
+			     intercept.phys_addr, mmio.size);
 	return false;
 }
 
@@ -247,7 +278,7 @@ bool vcpu_handle_msr_read(void)
 				cpu_data->mtrr_def_type);
 		break;
 	default:
-		panic_printk("FATAL: Unhandled MSR read: %x\n",
+		panic_printk("FATAL: Unhandled MSR read: %lx\n",
 			     cpu_data->guest_regs.rcx);
 		return false;
 	}
@@ -273,7 +304,7 @@ bool vcpu_handle_msr_write(void)
 			pa = (val >> bit_pos) & 0xff;
 			/* filter out reserved memory types */
 			if (pa == 2 || pa == 3 || pa > 7) {
-				printk("FATAL: Invalid PAT value: %x\n", val);
+				printk("FATAL: Invalid PAT value: %lx\n", val);
 				return false;
 			}
 		}
@@ -289,12 +320,13 @@ bool vcpu_handle_msr_write(void)
 		 * host-controlled MTRRs define the guest's memory types.
 		 */
 		val = get_wrmsr_value(&cpu_data->guest_regs);
-		cpu_data->mtrr_def_type = val;
+		cpu_data->mtrr_def_type &= ~MTRR_ENABLE;
+		cpu_data->mtrr_def_type |= val & MTRR_ENABLE;
 		vcpu_vendor_set_guest_pat((val & MTRR_ENABLE) ?
 					  cpu_data->pat : 0);
 		break;
 	default:
-		panic_printk("FATAL: Unhandled MSR write: %x\n",
+		panic_printk("FATAL: Unhandled MSR write: %lx\n",
 			     cpu_data->guest_regs.rcx);
 		return false;
 	}
@@ -357,7 +389,7 @@ void vcpu_reset(unsigned int sipi_vector)
 
 	if (sipi_vector == APIC_BSP_PSEUDO_SIPI) {
 		cpu_data->pat = PAT_RESET_VALUE;
-		cpu_data->mtrr_def_type = 0;
+		cpu_data->mtrr_def_type &= ~MTRR_ENABLE;
 		vcpu_vendor_set_guest_pat(0);
 	}
 }

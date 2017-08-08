@@ -1,9 +1,12 @@
 JAILHOUSE
 =========
 
+Introduction
+------------
+
 Jailhouse is a partitioning Hypervisor based on Linux. It is able to run
 bare-metal applications or (adapted) operating systems besides Linux. For this
-purpose it configures CPU and device virtualization features of the hardware
+purpose, it configures CPU and device virtualization features of the hardware
 platform in a way that none of these domains, called "cells" here, can
 interfere with each other in an unacceptable way.
 
@@ -20,8 +23,7 @@ Its management interface is based on Linux infrastructure. So you boot Linux
 first, then you enable Jailhouse and finally you split off parts of the
 system's resources and assign them to additional cells.
 
-
-WARNING: This is work in progress! Don't expect things to be complete in any
+**WARNING**: This is work in progress! Don't expect things to be complete in any
 dimension. Use at your own risk. And keep the reset button in reach.
 
 
@@ -72,10 +74,10 @@ See the [contribution documentation](CONTRIBUTING.md) for details
 on how to write Jailhouse patches and propose them for upstream integration.
 
 
-Requirements (preliminary)
---------------------------
+Hardware requirements (preliminary)
+-----------------------------------
 
-x86 architecture:
+#### x86 architecture:
 
   - Intel system:
 
@@ -95,9 +97,41 @@ x86 architecture:
 
     - AMD IOMMU (AMD-Vi) is unsupported now but will be required in future
 
-  - at least 2 logical CPUs
+  - At least 2 logical CPUs
 
-  - x86-64 Linux kernel (tested against >= 3.14)
+#### ARM architecture:
+
+  - ARMv7 with virtualization extensions or ARMv8
+
+  - At least 2 logical CPUs
+
+  - Supported ARM boards:
+
+    - Banana Pi ([see more](Documentation/setup-on-banana-pi-arm-board.md))
+
+    - Orange Pi Zero (256 MB version)
+
+    - NVIDIA Jetson TK1
+
+    - ARM Versatile Express with Cortex-A15 or A7 cores
+      (includes ARM Fast Model)
+
+  - Supported ARM64 boards:
+
+    - AMD Seattle / SoftIron Overdrive 3000
+
+    - LeMaker HiKey
+
+    - NVIDIA Jetson TX1
+
+    - Xilinx ZCU102 (ZynqMP evaluation board)
+
+Software requirements
+---------------------
+
+#### x86 architecture:
+
+  - x86-64 Linux kernel (tested against 3.14+)
 
     - VT-d IOMMU usage (DMAR) has to be disabled in the Linux kernel, e.g. via
       the command line parameter:
@@ -107,46 +141,64 @@ x86 architecture:
     - To exploit the faster x2APIC, interrupt remapping needs to be on in the
       kernel (check for CONFIG_IRQ_REMAP)
 
-ARM architecture:
+  - The hypervisor requires a contiguous piece of RAM for itself and each
+    additional cell. This currently has to be pre-allocated during boot-up.
+    On x86 this is typically done by adding
 
-  - Abstract:
+        memmap=66M$0x3b000000
 
-    - ARMv7 with virtualization extensions
+    as parameter to the command line of the virtual machine's kernel. Note that
+    if you plan to put this parameter in GRUB2 variables in /etc/default/grub,
+    then you will need three escape characters before the dollar
+    (e.g. ```GRUB_CMDLINE_LINUX_DEFAULT="memmap=66M\\\$0x3b000000"```).
 
-    - Appropriate boot loader support (typically U-Boot)
-      - Linux is started in HYP mode
-      - PSCI support for CPU offlining
+#### ARM architecture:
 
-    - at least 2 logical CPUs
+  - Linux kernel:
+    - 3.19+ for ARM
+    - 4.7+ for ARM64
 
-  - Board support:
+  - Appropriate boot loader support (typically U-Boot)
+     - Linux is started in HYP mode
+     - PSCI support for CPU offlining
 
-    - Banana Pi ([see more](Documentation/setup-on-banana-pi-arm-board.md))
-
-    - NVIDIA Jetson TK1
-
-    - ARM Versatile Express with Cortex-A15 or A7 cores
-      (includes ARM Fast Model)
-
-On x86, hardware capabilities can be validated by running
-
-    jailhouse hardware check sysconfig.cell
-
-using the binary system configuration created for the target (see
-[below](#configuration)).
+  - The hypervisor requires a contiguous piece of RAM for itself and each
+    additional cell. This currently has to be pre-allocated during boot-up.
+    On ARM this can be obtained by reducing the amount of memory seen by the
+    kernel (through the `mem=` kernel boot parameter) or by modifying the
+    Device Tree.
 
 
 Build & Installation
 --------------------
 
-Simply run make, optionally specifying the target kernel directory:
+Simply run `make`, optionally specifying the target kernel directory:
 
     make [KDIR=/path/to/kernel/objects]
 
-Except for the hypervisor image `jailhouse*.bin` that has to be available in the
-firmware search path (invoke `make firmware_install` for this), you can run
-Jailhouse from the build directory. Alternatively, install everything on the
-target machine by calling `make install` from the top-level directory.
+
+#### Installation
+
+It is recommended to install all of Jailhouse on your target machine. That will
+take care of a kernel module, the firmware, tools etc. Just call
+
+    make install
+
+from the top-level directory.
+
+The traditional Linux cross-compilation (i.e. `ARCH=` and `CROSS_COMPILE=`) and
+installation (i.e. `DESTDIR=`) flags are supported as well.
+
+#### Running without Installation
+
+Except for the hypervisor image `jailhouse*.bin`, that has to be available in
+the firmware search path, you can run Jailhouse from the build directory.
+If you cannot or do not want to use `make install`, you can either install just
+the firmware using `make firmware_install` or customize the firmware search
+path:
+
+    echo -n /path/to/jailhouse/hypervisor/ \
+        > /sys/module/firmware_class/parameters/path
 
 
 Configuration
@@ -157,14 +209,24 @@ each additional cell besides the primary Linux. These .cell files have to be
 passed to the jailhouse command line tool for enabling the hypervisor or
 creating new cells.
 
-A system configuration can be created on the target system by running the
-following command:
+On x86 a system configuration can be created on the target system by running
+the following command:
 
     jailhouse config create sysconfig.c
 
 In order to translate this into the required binary form, place this file in
 the configs/ directory. The build system will pick up every .c file from there
 and generate a corresponding .cell file.
+
+On x86 the hardware capabilities can be validated by running
+
+    jailhouse hardware check sysconfig.cell
+
+providing the binary system configuration created for the target.
+
+Currently, there is no config generator for the ARM architecture; therefore the
+config file must be manually written by starting from the reference examples
+and checking hardware-specific datasheets, DTS and /proc entries.
 
 Depending on the target system, the C structures may require some adjustments to
 make Jailhouse work properly or to reduce the desired access rights of the Linux
@@ -191,10 +253,11 @@ For Intel CPUs: Make sure the kvm-intel module was loaded with nested=1 to
 enable nested VMX support. Start the virtual machine as follows:
 
     qemu-system-x86_64 -machine q35,kernel_irqchip=split -m 1G -enable-kvm \
-        -smp 4 -device intel-iommu,intremap=on \
+        -smp 4 -device intel-iommu,intremap=on,x-buggy-eim=on \
         -cpu kvm64,-kvm_pv_eoi,-kvm_steal_time,-kvm_asyncpf,-kvmclock,+vmx \
         -drive file=LinuxInstallation.img,format=raw|qcow2|...,id=disk,if=none \
         -device ide-hd,drive=disk -serial stdio -serial vc \
+        -netdev user,id=net -device e1000e,addr=2.0,netdev=net \
         -device intel-hda,addr=1b.0 -device hda-duplex
 
 For AMD CPUs: Make sure the kvm-amd module was loaded with nested=1 to enable
@@ -204,22 +267,12 @@ nested SVM support. Start the virtual machine as follows:
         -cpu host,-kvm_pv_eoi,-kvm_steal_time,-kvm_asyncpf,-kvmclock \
         -drive file=LinuxInstallation.img,format=raw|qcow2|...,id=disk,if=none \
         -device ide-hd,drive=disk -serial stdio -serial vc \
+        -netdev user,id=net -device e1000e,addr=2.0,netdev=net \
         -device intel-hda,addr=1b.0 -device hda-duplex
 
 Inside the VM, make sure that `jailhouse-*.bin`, generated by the build process,
 are available for firmware loading (typically /lib/firmware), see above for
 installation steps.
-
-The hypervisor requires a contiguous piece of RAM for itself and each
-additional cell. This currently has to be pre-allocated during boot-up. So you
-need to add
-
-    memmap=66M$0x3b000000
-
-as parameter to the command line of the virtual machine's kernel. Note that if
-you plan to put this parameter in GRUB2 variables in /etc/default/grub, then you
-will need three escape characters before the dollar
-(e.g. ```GRUB_CMDLINE_LINUX_DEFAULT="memmap=66M\\\$0x3b000000"```).
 
 The Jailhouse QEMU cell config will block use of the serial port by the guest
 OS, so make sure that the guest kernel command line does NOT have its console

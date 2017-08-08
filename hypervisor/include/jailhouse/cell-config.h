@@ -39,11 +39,15 @@
 #ifndef _JAILHOUSE_CELL_CONFIG_H
 #define _JAILHOUSE_CELL_CONFIG_H
 
+/* Incremented on any layout or semantic change of system or cell config. */
+#define JAILHOUSE_CONFIG_REVISION	4
+
 #define JAILHOUSE_CELL_NAME_MAXLEN	31
 
 #define JAILHOUSE_CELL_PASSIVE_COMMREG	0x00000001
+#define JAILHOUSE_CELL_DEBUG_CONSOLE	0x00000002
 
-#define JAILHOUSE_CELL_DESC_SIGNATURE	"JAILCELL"
+#define JAILHOUSE_CELL_DESC_SIGNATURE	"JHCELL"
 
 /**
  * The jailhouse cell configuration.
@@ -52,7 +56,9 @@
  * structure.
  */
 struct jailhouse_cell_desc {
-	char signature[8];
+	char signature[6];
+	__u16 revision;
+
 	char name[JAILHOUSE_CELL_NAME_MAXLEN+1];
 	__u32 id; /* set by the driver */
 	__u32 flags;
@@ -64,6 +70,8 @@ struct jailhouse_cell_desc {
 	__u32 pio_bitmap_size;
 	__u32 num_pci_devices;
 	__u32 num_pci_caps;
+
+	__u32 vpci_irq_base;
 } __attribute__((packed));
 
 #define JAILHOUSE_MEM_READ		0x0001
@@ -75,7 +83,7 @@ struct jailhouse_cell_desc {
 #define JAILHOUSE_MEM_LOADABLE		0x0040
 #define JAILHOUSE_MEM_ROOTSHARED	0x0080
 #define JAILHOUSE_MEM_IO_UNALIGNED	0x0100
-#define JAILHOUSE_MEM_IO_WIDTH_SHIFT	16 /* uses bits 8..11 */
+#define JAILHOUSE_MEM_IO_WIDTH_SHIFT	16 /* uses bits 16..19 */
 #define JAILHOUSE_MEM_IO_8		(1 << JAILHOUSE_MEM_IO_WIDTH_SHIFT)
 #define JAILHOUSE_MEM_IO_16		(2 << JAILHOUSE_MEM_IO_WIDTH_SHIFT)
 #define JAILHOUSE_MEM_IO_32		(4 << JAILHOUSE_MEM_IO_WIDTH_SHIFT)
@@ -117,6 +125,10 @@ struct jailhouse_irqchip {
 #define JAILHOUSE_PCI_TYPE_BRIDGE	0x02
 #define JAILHOUSE_PCI_TYPE_IVSHMEM	0x03
 
+#define JAILHOUSE_SHMEM_PROTO_UNDEFINED	0x0000
+#define JAILHOUSE_SHMEM_PROTO_VETH	0x0100
+#define JAILHOUSE_SHMEM_PROTO_CUSTOM	0x8000	/* 0x80xx..0xffxx */
+
 struct jailhouse_pci_device {
 	__u8 type;
 	__u8 iommu;
@@ -130,8 +142,11 @@ struct jailhouse_pci_device {
 	__u16 num_msix_vectors;
 	__u16 msix_region_size;
 	__u64 msix_address;
-	/** used to refer to memory in virtual PCI devices */
+	/** Memory region index of virtual shared memory device. */
 	__u32 shmem_region;
+	/** PCI subclass and interface ID of virtual shared memory device. */
+	__u16 shmem_protocol;
+	__u8 padding[2];
 } __attribute__((packed));
 
 #define JAILHOUSE_PCI_EXT_CAP		0x8000
@@ -145,6 +160,10 @@ struct jailhouse_pci_capability {
 	__u16 flags;
 } __attribute__((packed));
 
+#define JAILHOUSE_APIC_MODE_AUTO	0
+#define JAILHOUSE_APIC_MODE_XAPIC	1
+#define JAILHOUSE_APIC_MODE_X2APIC	2
+
 #define JAILHOUSE_MAX_IOMMU_UNITS	8
 
 struct jailhouse_iommu {
@@ -156,32 +175,80 @@ struct jailhouse_iommu {
 	__u32 amd_features;
 } __attribute__((packed));
 
-#define JAILHOUSE_SYSTEM_SIGNATURE	"JAILSYST"
+/* Bits 0..3 are used to select the particular driver */
+#define JAILHOUSE_CON1_TYPE_NONE	0x0000
+#define JAILHOUSE_CON1_TYPE_VGA		0x0001
+#define JAILHOUSE_CON1_TYPE_8250	0x0002
+#define JAILHOUSE_CON1_TYPE_PL011	0x0003
+#define JAILHOUSE_CON1_TYPE_XUARTPS	0x0004
+#define JAILHOUSE_CON1_TYPE_MASK	0x000f
 
+#define CON1_TYPE(flags) ((flags) & JAILHOUSE_CON1_TYPE_MASK)
+
+/* Bits 4 is used to select PIO (cleared) or MMIO (set) access */
+#define JAILHOUSE_CON1_ACCESS_PIO	0x0000
+#define JAILHOUSE_CON1_ACCESS_MMIO	0x0010
+
+#define CON1_IS_MMIO(flags) ((flags) & JAILHOUSE_CON1_ACCESS_MMIO)
+
+/* Bits 5 is used to select 1 (cleared) or 4-bytes (set) register distance.
+ * 1 byte implied 8-bit access, 4 bytes 32-bit access. */
+#define JAILHOUSE_CON1_REGDIST_1	0x0000
+#define JAILHOUSE_CON1_REGDIST_4	0x0020
+
+#define CON1_USES_REGDIST_1(flags) (((flags) & JAILHOUSE_CON1_REGDIST_4) == 0)
+
+/* Bits 8..11 are used to select the second console driver */
+#define JAILHOUSE_CON2_TYPE_ROOTPAGE	0x0100
+#define JAILHOUSE_CON2_TYPE_MASK	0x0f00
+
+#define CON2_TYPE(flags) ((flags) & JAILHOUSE_CON2_TYPE_MASK)
+
+struct jailhouse_debug_console {
+	__u64 address;
+	__u32 size;
+	__u32 flags;
+	__u32 divider;
+	__u32 gate_nr;
+	__u64 clock_reg;
+} __attribute__((packed));
+
+#define JAILHOUSE_SYSTEM_SIGNATURE	"JHSYST"
+
+/**
+ * General descriptor of the system.
+ */
 struct jailhouse_system {
-	char signature[8];
+	char signature[6];
+	__u16 revision;
+
+	/** Jailhouse's location in memory */
 	struct jailhouse_memory hypervisor_memory;
-	struct jailhouse_memory debug_console;
-	union {
-		struct {
-			__u64 mmconfig_base;
-			__u8 mmconfig_end_bus;
-			__u8 padding[5];
-			__u16 pm_timer_address;
-			struct jailhouse_iommu
-				iommu_units[JAILHOUSE_MAX_IOMMU_UNITS];
-		} __attribute__((packed)) x86;
-		struct {
-			u64 gicd_base;
-			u64 gicc_base;
-			u64 gich_base;
-			u64 gicv_base;
-			u64 gicr_base;
-			u8 maintenance_irq;
-			u8 padding[3];
-		} __attribute__((packed)) arm;
+	struct jailhouse_debug_console debug_console;
+	struct {
+		__u64 pci_mmconfig_base;
+		__u8 pci_mmconfig_end_bus;
+		__u8 pci_is_virtual;
+		union {
+			struct {
+				__u16 pm_timer_address;
+				__u32 vtd_interrupt_limit;
+				__u8 apic_mode;
+				__u8 padding[3];
+				struct jailhouse_iommu
+					iommu_units[JAILHOUSE_MAX_IOMMU_UNITS];
+			} __attribute__((packed)) x86;
+			struct {
+				u8 maintenance_irq;
+				u8 padding;
+				u64 gicd_base;
+				u64 gicc_base;
+				u64 gich_base;
+				u64 gicv_base;
+				u64 gicr_base;
+			} __attribute__((packed)) arm;
+		} __attribute__((packed));
 	} __attribute__((packed)) platform_info;
-	__u32 interrupt_limit;
 	struct jailhouse_cell_desc root_cell;
 } __attribute__((packed));
 

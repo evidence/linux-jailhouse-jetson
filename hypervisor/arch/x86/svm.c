@@ -95,16 +95,6 @@ static u8 __attribute__((aligned(PAGE_SIZE))) msrpm[][0x2000/4] = {
 	}
 };
 
-/* This page is mapped so the code begins at 0x000ffff0 */
-static u8 __attribute__((aligned(PAGE_SIZE))) parking_code[PAGE_SIZE] = {
-	[0xff0] = 0xfa, /* 1: cli */
-	[0xff1] = 0xf4, /*    hlt */
-	[0xff2] = 0xeb,
-	[0xff3] = 0xfc  /*    jmp 1b */
-};
-
-static void *parked_mode_npt;
-
 static void *avic_page;
 
 static int svm_check_features(void)
@@ -283,9 +273,8 @@ static unsigned long npt_iommu_get_phys_l2(pt_entry_t pte, unsigned long virt)
 	return (*pte & BIT_MASK(51, 21)) | (virt & BIT_MASK(20, 0));
 }
 
-int vcpu_vendor_init(void)
+int vcpu_vendor_early_init(void)
 {
-	struct paging_structures parking_pt;
 	unsigned long vm_cr;
 	int err;
 
@@ -310,17 +299,7 @@ int vcpu_vendor_init(void)
 	npt_iommu_paging[1].get_phys = npt_iommu_get_phys_l3;
 	npt_iommu_paging[2].get_phys = npt_iommu_get_phys_l2;
 
-	/* Map guest parking code (shared between cells and CPUs) */
 	parking_pt.root_paging = npt_iommu_paging;
-	parking_pt.root_table = parked_mode_npt = page_alloc(&mem_pool, 1);
-	if (!parked_mode_npt)
-		return -ENOMEM;
-	err = paging_create(&parking_pt, paging_hvirt2phys(parking_code),
-			    PAGE_SIZE, 0x000ff000,
-			    PAGE_READONLY_FLAGS | PAGE_FLAG_US,
-			    PAGING_NON_COHERENT);
-	if (err)
-		return err;
 
 	/* This is always false for AMD now (except in nested SVM);
 	   see Sect. 16.3.1 in APMv2 */
@@ -867,18 +846,18 @@ out_err:
 
 static void dump_guest_regs(union registers *guest_regs, struct vmcb *vmcb)
 {
-	panic_printk("RIP: %p RSP: %p FLAGS: %x\n", vmcb->rip,
+	panic_printk("RIP: 0x%016llx RSP: 0x%016llx FLAGS: %llx\n", vmcb->rip,
 		     vmcb->rsp, vmcb->rflags);
-	panic_printk("RAX: %p RBX: %p RCX: %p\n", guest_regs->rax,
-		     guest_regs->rbx, guest_regs->rcx);
-	panic_printk("RDX: %p RSI: %p RDI: %p\n", guest_regs->rdx,
-		     guest_regs->rsi, guest_regs->rdi);
-	panic_printk("CS: %x BASE: %p AR-BYTES: %x EFER.LMA %d\n",
+	panic_printk("RAX: 0x%016lx RBX: 0x%016lx RCX: 0x%016lx\n",
+		     guest_regs->rax, guest_regs->rbx, guest_regs->rcx);
+	panic_printk("RDX: 0x%016lx RSI: 0x%016lx RDI: 0x%016lx\n",
+		     guest_regs->rdx, guest_regs->rsi, guest_regs->rdi);
+	panic_printk("CS: %x BASE: 0x%016llx AR-BYTES: %x EFER.LMA %d\n",
 		     vmcb->cs.selector, vmcb->cs.base, vmcb->cs.access_rights,
 		     !!(vmcb->efer & EFER_LMA));
-	panic_printk("CR0: %p CR3: %p CR4: %p\n", vmcb->cr0,
-		     vmcb->cr3, vmcb->cr4);
-	panic_printk("EFER: %p\n", vmcb->efer);
+	panic_printk("CR0: 0x%016llx CR3: 0x%016llx CR4: 0x%016llx\n",
+		     vmcb->cr0, vmcb->cr3, vmcb->cr4);
+	panic_printk("EFER: 0x%016llx\n", vmcb->efer);
 }
 
 void vcpu_vendor_get_io_intercept(struct vcpu_io_intercept *io)
@@ -926,7 +905,7 @@ void vcpu_handle_exit(struct per_cpu *cpu_data)
 
 	switch (vmcb->exitcode) {
 	case VMEXIT_INVALID:
-		panic_printk("FATAL: VM-Entry failure, error %d\n",
+		panic_printk("FATAL: VM-Entry failure, error %lld\n",
 			     vmcb->exitcode);
 		break;
 	case VMEXIT_NMI:
@@ -989,8 +968,8 @@ void vcpu_handle_exit(struct per_cpu *cpu_data)
 		goto vmentry;
 	/* TODO: Handle VMEXIT_AVIC_NOACCEL and VMEXIT_AVIC_INCOMPLETE_IPI */
 	default:
-		panic_printk("FATAL: Unexpected #VMEXIT, exitcode %x, "
-			     "exitinfo1 %p exitinfo2 %p\n",
+		panic_printk("FATAL: Unexpected #VMEXIT, exitcode %llx, "
+			     "exitinfo1 0x%016llx exitinfo2 0x%016llx\n",
 			     vmcb->exitcode, vmcb->exitinfo1, vmcb->exitinfo2);
 	}
 	dump_guest_regs(&cpu_data->guest_regs, vmcb);
@@ -1002,10 +981,16 @@ vmentry:
 
 void vcpu_park(void)
 {
+#ifdef CONFIG_CRASH_CELL_ON_PANIC
+	if (this_cpu_data()->failed) {
+		this_cpu_data()->vmcb.rip = 0;
+		return;
+	}
+#endif
 	vcpu_vendor_reset(APIC_BSP_PSEUDO_SIPI);
 	/* No need to clear VMCB Clean bit: vcpu_vendor_reset() already does
 	 * this. */
-	this_cpu_data()->vmcb.n_cr3 = paging_hvirt2phys(parked_mode_npt);
+	this_cpu_data()->vmcb.n_cr3 = paging_hvirt2phys(parking_pt.root_table);
 
 	vcpu_tlb_flush();
 }

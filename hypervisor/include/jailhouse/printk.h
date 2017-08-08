@@ -12,12 +12,9 @@
 
 #include <jailhouse/types.h>
 
-extern volatile unsigned long panic_in_progress;
-extern unsigned long panic_cpu;
+void __attribute__((format(printf, 1, 2))) printk(const char *fmt, ...);
 
-void printk(const char *fmt, ...);
-
-void panic_printk(const char *fmt, ...);
+void __attribute__((format(printf, 1, 2))) panic_printk(const char *fmt, ...);
 
 #ifdef CONFIG_TRACE_ERROR
 #define trace_error(code) ({						  \
@@ -29,4 +26,7 @@ void panic_printk(const char *fmt, ...);
 #endif /* !CONFIG_TRACE_ERROR */
 
 void arch_dbg_write_init(void);
-void arch_dbg_write(const char *msg);
+extern void (*arch_dbg_write)(const char *msg);
+
+extern bool virtual_console;
+extern volatile struct jailhouse_console console;

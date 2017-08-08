@@ -25,6 +25,7 @@ struct {
 } __attribute__((packed)) config = {
 	.cell = {
 		.signature = JAILHOUSE_CELL_DESC_SIGNATURE,
+		.revision = JAILHOUSE_CONFIG_REVISION,
 		.name = "ivshmem-demo",
 		.flags = JAILHOUSE_CELL_PASSIVE_COMMREG,
 
@@ -56,9 +57,9 @@ struct {
 		},
 		/* IVSHMEM shared memory region */
 		{
-			.phys_start = 0x3f100000,
-			.virt_start = 0x3f100000,
-			.size = 0x100000,
+			.phys_start = 0x3f1ff000,
+			.virt_start = 0x3f1ff000,
+			.size = 0x1000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
 				JAILHOUSE_MEM_ROOTSHARED,
 		},
@@ -73,14 +74,14 @@ struct {
 	.pci_devices = {
 		{
 			.type = JAILHOUSE_PCI_TYPE_IVSHMEM,
-			.domain = 0x0,
-			.bdf = (0x0f<<3),
+			.domain = 0x0000,
+			.bdf = 0x0f << 3,
 			.bar_mask = {
 				0xffffff00, 0xffffffff, 0x00000000,
 				0x00000000, 0xffffffe0, 0xffffffff,
 			},
-			.shmem_region = 2,
 			.num_msix_vectors = 1,
+			.shmem_region = 2,
 		},
 	},
 };

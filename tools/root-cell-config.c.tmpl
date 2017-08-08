@@ -1,7 +1,7 @@
 /*
  * Jailhouse, a Linux-based partitioning hypervisor
  *
- * Copyright (c) Siemens AG, 2014-2016
+ * Copyright (c) Siemens AG, 2014-2017
  *
  * This work is licensed under the terms of the GNU GPL, version 2.  See
  * the COPYING file in the top-level directory.
@@ -55,35 +55,57 @@ struct {
 } __attribute__((packed)) config = {
 	.header = {
 		.signature = JAILHOUSE_SYSTEM_SIGNATURE,
+		.revision = JAILHOUSE_CONFIG_REVISION,
 		.hypervisor_memory = {
 			.phys_start = ${hex(hvmem[0])},
 			.size = ${hex(hvmem[1])},
 		},
 		.debug_console = {
-			.phys_start = 0x3f8,
-		},
-		.platform_info.x86 = {
-			.mmconfig_base = ${hex(mmconfig.base)},
-			.mmconfig_end_bus = ${hex(mmconfig.end_bus)},
-			.pm_timer_address = ${hex(pm_timer_base)},
-			% if iommu_units:
-			.iommu_units = {
-				% for unit in iommu_units:
-				{
-					.base = ${hex(unit.base_addr)},
-					.size = ${hex(unit.mmio_size)},
-					% if unit.is_amd_iommu:
-					.amd_bdf = ${hex(unit.amd_bdf)},
-					.amd_base_cap = ${hex(unit.amd_base_cap)},
-					.amd_msi_cap = ${hex(unit.amd_msi_cap)},
-					.amd_features = ${hex(unit.amd_features)},
-				        % endif
-				},
-				% endfor
-			},
+			% if debug_console.address != 0:
+			.address = ${hex(debug_console.address)},
+			% if not debug_console.pio:
+			.size = 0x1000,
 			% endif
+			.flags = JAILHOUSE_CON1_TYPE_8250 |
+				 % if debug_console.pio:
+				 JAILHOUSE_CON1_ACCESS_PIO |
+				 % else:
+				 JAILHOUSE_CON1_ACCESS_MMIO |
+				 % endif
+				 % if debug_console.dist1:
+				 JAILHOUSE_CON1_REGDIST_1 |
+				 % else:
+				 JAILHOUSE_CON1_REGDIST_4 |
+				 % endif
+			% else:
+			.flags = JAILHOUSE_CON1_TYPE_NONE |
+			% endif
+				 JAILHOUSE_CON2_TYPE_ROOTPAGE,
 		},
-		.interrupt_limit = 256,
+		.platform_info = {
+			.pci_mmconfig_base = ${hex(mmconfig.base)},
+			.pci_mmconfig_end_bus = ${hex(mmconfig.end_bus)},
+			.x86 = {
+				.pm_timer_address = ${hex(pm_timer_base)},
+				.vtd_interrupt_limit = 256,
+				% if iommu_units:
+				.iommu_units = {
+					% for unit in iommu_units:
+					{
+						.base = ${hex(unit.base_addr)},
+						.size = ${hex(unit.mmio_size)},
+						% if unit.is_amd_iommu:
+						.amd_bdf = ${hex(unit.amd_bdf)},
+						.amd_base_cap = ${hex(unit.amd_base_cap)},
+						.amd_msi_cap = ${hex(unit.amd_msi_cap)},
+						.amd_features = ${hex(unit.amd_features)},
+						% endif
+					},
+					% endfor
+				},
+				% endif
+			},
+		},
 		.root_cell = {
 			.name = "RootCell",
 			.cpu_set_size = sizeof(config.cpus),

@@ -11,7 +11,7 @@
  */
 
 #include <jailhouse/control.h>
-#include <jailhouse/mmio.h>
+#include <jailhouse/printk.h>
 #include <asm/gic.h>
 #include <asm/irqchip.h>
 #include <asm/setup.h>
@@ -20,6 +20,19 @@ static unsigned int gic_num_lr;
 
 void *gicc_base;
 void *gich_base;
+
+/* Check that the targeted interface belongs to the cell */
+static bool gic_targets_in_cell(struct cell *cell, u8 targets)
+{
+	unsigned int cpu;
+
+	for (cpu = 0; cpu < ARRAY_SIZE(gicv2_target_cpu_map); cpu++)
+		if (targets & gicv2_target_cpu_map[cpu] &&
+		    per_cpu(cpu)->cell != cell)
+			return false;
+
+	return true;
+}
 
 static int gic_init(void)
 {
@@ -48,55 +61,22 @@ static void gic_clear_pending_irqs(void)
 	mmio_write32(gich_base + GICH_APR, 0);
 }
 
-static void gic_cpu_reset(struct per_cpu *cpu_data, bool is_shutdown)
+static void gic_cpu_reset(struct per_cpu *cpu_data)
 {
 	unsigned int mnt_irq = system_config->platform_info.arm.maintenance_irq;
-	unsigned int i;
-	bool root_shutdown = is_shutdown && (cpu_data->cell == &root_cell);
-	u32 active;
-	u32 gich_vmcr = 0;
-	u32 gicc_ctlr, gicc_pmr;
 
 	gic_clear_pending_irqs();
-
-	/* Deactivate all PPIs */
-	active = mmio_read32(gicd_base + GICD_ISACTIVER);
-	for (i = 16; i < 32; i++) {
-		if (test_bit(i, (unsigned long *)&active))
-			mmio_write32(gicc_base + GICC_DIR, i);
-	}
 
 	/* Ensure all IPIs and the maintenance PPI are enabled */
 	mmio_write32(gicd_base + GICD_ISENABLER, 0x0000ffff | (1 << mnt_irq));
 
-	/*
-	 * Disable PPIs, except for the maintenance interrupt.
-	 * On shutdown, the root cell expects to find all its PPIs still
-	 * enabled - except for the maintenance interrupt we used.
-	 */
-	mmio_write32(gicd_base + GICD_ICENABLER,
-		     root_shutdown ? 1 << mnt_irq :
-				     0xffff0000 & ~(1 << mnt_irq));
+	/* Disable PPIs, except for the maintenance interrupt. */
+	mmio_write32(gicd_base + GICD_ICENABLER, 0xffff0000 & ~(1 << mnt_irq));
 
-	if (is_shutdown)
-		mmio_write32(gich_base + GICH_HCR, 0);
+	/* Deactivate all active PPIs */
+	mmio_write32(gicd_base + GICD_ICACTIVER, 0xffff0000);
 
-	if (root_shutdown) {
-		gich_vmcr = mmio_read32(gich_base + GICH_VMCR);
-		gicc_ctlr = 0;
-		gicc_pmr = (gich_vmcr >> GICH_VMCR_PMR_SHIFT) << GICV_PMR_SHIFT;
-
-		if (gich_vmcr & GICH_VMCR_EN0)
-			gicc_ctlr |= GICC_CTLR_GRPEN1;
-		if (gich_vmcr & GICH_VMCR_EOImode)
-			gicc_ctlr |= GICC_CTLR_EOImode;
-
-		mmio_write32(gicc_base + GICC_CTLR, gicc_ctlr);
-		mmio_write32(gicc_base + GICC_PMR, gicc_pmr);
-
-		gich_vmcr = 0;
-	}
-	mmio_write32(gich_base + GICH_VMCR, gich_vmcr);
+	mmio_write32(gich_base + GICH_VMCR, 0);
 }
 
 static int gic_cpu_init(struct per_cpu *cpu_data)
@@ -147,10 +127,51 @@ static int gic_cpu_init(struct per_cpu *cpu_data)
 	 */
 	gic_clear_pending_irqs();
 
-	/* Register ourselves into the CPU itf map */
-	gic_probe_cpu_id(cpu_data->cpu_id);
+	cpu_data->gicc_initialized = true;
+
+	/*
+	 * Get the CPU interface ID for this cpu. It can be discovered by
+	 * reading the banked value of the PPI and IPI TARGET registers
+	 * Patch 2bb3135 in Linux explains why the probe may need to scans the
+	 * first 8 registers: some early implementation returned 0 for the first
+	 * ITARGETSR registers.
+	 * Since those didn't have virtualization extensions, we can safely
+	 * ignore that case.
+	 */
+	if (cpu_data->cpu_id >= ARRAY_SIZE(gicv2_target_cpu_map))
+		return -EINVAL;
+
+	gicv2_target_cpu_map[cpu_data->cpu_id] =
+		mmio_read32(gicd_base + GICD_ITARGETSR);
+
+	if (gicv2_target_cpu_map[cpu_data->cpu_id] == 0)
+		return -ENODEV;
 
 	return 0;
+}
+
+static void gic_cpu_shutdown(struct per_cpu *cpu_data)
+{
+	u32 gich_vmcr = mmio_read32(gich_base + GICH_VMCR);
+	u32 gicc_ctlr = 0;
+
+	if (!cpu_data->gicc_initialized)
+		return;
+
+	mmio_write32(gich_base + GICH_HCR, 0);
+
+	/* Disable the maintenance interrupt - not used by Linux. */
+	mmio_write32(gicd_base + GICD_ICENABLER,
+		     1 << system_config->platform_info.arm.maintenance_irq);
+
+	if (gich_vmcr & GICH_VMCR_EN0)
+		gicc_ctlr |= GICC_CTLR_GRPEN1;
+	if (gich_vmcr & GICH_VMCR_EOImode)
+		gicc_ctlr |= GICC_CTLR_EOImode;
+
+	mmio_write32(gicc_base + GICC_CTLR, gicc_ctlr);
+	mmio_write32(gicc_base + GICC_PMR,
+		     (gich_vmcr >> GICH_VMCR_PMR_SHIFT) << GICV_PMR_SHIFT);
 }
 
 static void gic_eoi_irq(u32 irq_id, bool deactivate)
@@ -166,8 +187,6 @@ static void gic_eoi_irq(u32 irq_id, bool deactivate)
 
 static int gic_cell_init(struct cell *cell)
 {
-	int err;
-
 	/*
 	 * Let the guest access the virtual CPU interface instead of the
 	 * physical one.
@@ -177,19 +196,13 @@ static int gic_cell_init(struct cell *cell)
 	 * here.
 	 * As for now, none of them seem to have virtualization extensions.
 	 */
-	err = paging_create(&cell->arch.mm,
-			    system_config->platform_info.arm.gicv_base,
-			    GICC_SIZE,
-			    system_config->platform_info.arm.gicc_base,
-			    (PTE_FLAG_VALID | PTE_ACCESS_FLAG |
-			     S2_PTE_ACCESS_RW | S2_PTE_FLAG_DEVICE),
-			    PAGING_COHERENT);
-	if (err)
-		return err;
-
-	mmio_region_register(cell, system_config->platform_info.arm.gicd_base,
-			     GICD_SIZE, gic_handle_dist_access, NULL);
-	return 0;
+	return paging_create(&cell->arch.mm,
+			     system_config->platform_info.arm.gicv_base,
+			     GICC_SIZE,
+			     system_config->platform_info.arm.gicc_base,
+			     (PTE_FLAG_VALID | PTE_ACCESS_FLAG |
+			      S2_PTE_ACCESS_RW | S2_PTE_FLAG_DEVICE),
+			     PAGING_COHERENT);
 }
 
 static void gic_cell_exit(struct cell *cell)
@@ -209,7 +222,7 @@ static void gic_adjust_irq_target(struct cell *cell, u16 irq_id)
 		return;
 
 	targets &= ~(0xff << shift);
-	targets |= target_cpu_map[first_cpu(cell->cpu_set)] << shift;
+	targets |= gicv2_target_cpu_map[first_cpu(cell->cpu_set)] << shift;
 
 	mmio_write32(itargetsr, targets);
 }
@@ -282,10 +295,91 @@ static void gic_enable_maint_irq(bool enable)
 	mmio_write32(gich_base + GICH_HCR, hcr);
 }
 
+static bool gic_has_pending_irqs(void)
+{
+	unsigned int n;
+
+	for (n = 0; n < gic_num_lr; n++)
+		if (gic_read_lr(n) & GICH_LR_PENDING_BIT)
+			return true;
+
+	return false;
+}
+
 enum mmio_result gic_handle_irq_route(struct mmio_access *mmio,
 				      unsigned int irq)
 {
 	/* doesn't exist in v2 - ignore access */
+	return MMIO_HANDLED;
+}
+
+/*
+ * GICv2 uses 8bit values for each IRQ in the ITARGETSR registers
+ */
+static enum mmio_result gic_handle_irq_target(struct mmio_access *mmio,
+					      unsigned int irq)
+{
+	/*
+	 * ITARGETSR contain one byte per IRQ, so the first one affected by this
+	 * access corresponds to the reg index
+	 */
+	unsigned int irq_base = irq & ~0x3;
+	struct cell *cell = this_cell();
+	unsigned int offset;
+	u32 access_mask = 0;
+	unsigned int n;
+	u8 targets;
+
+	/*
+	 * Let the guest freely access its SGIs and PPIs, which may be used to
+	 * fill its CPU interface map.
+	 */
+	if (!is_spi(irq)) {
+		mmio_perform_access(gicd_base, mmio);
+		return MMIO_HANDLED;
+	}
+
+	/*
+	 * The registers are byte-accessible, but we always do word accesses.
+	 */
+	offset = irq % 4;
+	mmio->address &= ~0x3;
+	mmio->value <<= 8 * offset;
+	mmio->size = 4;
+
+	for (n = 0; n < 4; n++) {
+		if (irqchip_irq_in_cell(cell, irq_base + n))
+			access_mask |= 0xff << (8 * n);
+		else
+			continue;
+
+		if (!mmio->is_write)
+			continue;
+
+		targets = (mmio->value >> (8 * n)) & 0xff;
+
+		if (!gic_targets_in_cell(cell, targets)) {
+			printk("Attempt to route IRQ%d outside of cell\n",
+			       irq_base + n);
+			return MMIO_ERROR;
+		}
+	}
+
+	if (mmio->is_write) {
+		spin_lock(&dist_lock);
+		u32 itargetsr =
+			mmio_read32(gicd_base + GICD_ITARGETSR + irq_base);
+		mmio->value &= access_mask;
+		/* Combine with external SPIs */
+		mmio->value |= (itargetsr & ~access_mask);
+		/* And do the access */
+		mmio_perform_access(gicd_base, mmio);
+		spin_unlock(&dist_lock);
+	} else {
+		mmio_perform_access(gicd_base, mmio);
+		mmio->value &= access_mask;
+	}
+
 	return MMIO_HANDLED;
 }
 
@@ -298,13 +392,16 @@ struct irqchip_ops irqchip = {
 	.init = gic_init,
 	.cpu_init = gic_cpu_init,
 	.cpu_reset = gic_cpu_reset,
+	.cpu_shutdown = gic_cpu_shutdown,
 	.cell_init = gic_cell_init,
 	.cell_exit = gic_cell_exit,
 	.adjust_irq_target = gic_adjust_irq_target,
 
 	.send_sgi = gic_send_sgi,
-	.handle_irq = gic_handle_irq,
 	.inject_irq = gic_inject_irq,
 	.enable_maint_irq = gic_enable_maint_irq,
+	.has_pending_irqs = gic_has_pending_irqs,
 	.eoi_irq = gic_eoi_irq,
+
+	.handle_irq_target = gic_handle_irq_target,
 };

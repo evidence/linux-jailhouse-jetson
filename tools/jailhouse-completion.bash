@@ -1,7 +1,7 @@
 # bash completion for jailhouse
 #
 # Copyright (c) Benjamin Block, 2014
-# Copyright (c) Siemens AG, 2015
+# Copyright (c) Siemens AG, 2015-2016
 #
 # Authors:
 #  Benjamin Block <bebl@mageta.org>
@@ -52,6 +52,11 @@ function _jailhouse_get_id() {
 
 	cur="${1}"
 	prev="${2}"
+	if [[ ${3} = with_root ]]; then
+		cells=/sys/devices/jailhouse/cells/*
+	else
+		cells=/sys/devices/jailhouse/cells/[1-9]*
+	fi
 
 	ids=""
 	names=""
@@ -63,13 +68,19 @@ function _jailhouse_get_id() {
 	# if we are at position 3 of the commnadline we can either input a
 	# concrete `ID`/`NAME` or the option `--name`
 	if [ "${COMP_CWORD}" -eq 3 ]; then
+		shopt -q nullglob && nullglob_set=true
+		shopt -s nullglob
 
 		# get possible ids and names
-		if [ -d /sys/devices/jailhouse/cells ]; then
-			for i in /sys/devices/jailhouse/cells/*; do
-				ids="${ids} ${i##*/}"
-				names="${names} $(<${i}/name)"
-			done
+		for i in ${cells}; do
+			ids="${ids} ${i##*/}"
+			names="${names} $(<${i}/name)"
+		done
+
+		[ ! $nullglob_set ] && shopt -u nullglob
+
+		if [ "${ids}" == "" ]; then
+			return 1;
 		fi
 
 		COMPREPLY=( $( compgen -W "--name ${ids} ${names}" -- \
@@ -80,12 +91,15 @@ function _jailhouse_get_id() {
 	elif [ "${COMP_CWORD}" -eq 4 ]; then
 		[ "${prev}" = "--name" ] || return 1
 
+		shopt -q nullglob && nullglob_set=true
+		shopt -s nullglob
+
 		# get possible names
-		if [ -d /sys/devices/jailhouse/cells ]; then
-			for n in /sys/devices/jailhouse/cells/*/name; do
-				names="${names} $(<${n})"
-			done
-		fi
+		for n in ${cells}; do
+			names="${names} $(<${n})"
+		done
+
+		[ ! $nullglob_set ] && shopt -u nullglob
 
 		COMPREPLY=( $( compgen -W "${names}" -- ${quoted_cur} ) )
 
@@ -111,7 +125,7 @@ function _jailhouse_cell_linux() {
 	else
 		# if the previous was on of the following options
 		case "${prev}" in
-		-i|--initrd|-w|--write-params)
+		-d|--dtb|-i|--initrd|-w|--write-params)
 			# search an existing file
 			_filedir
 			return $?
@@ -160,7 +174,7 @@ function _jailhouse_cell() {
 	load)
 		# first, select the id/name of the cell we want to load a image
 		# for
-		_jailhouse_get_id "${cur}" "${prev}" && return 0
+		_jailhouse_get_id "${cur}" "${prev}" no_root && return 0
 
 		# [image & address] can be repeated
 
@@ -206,15 +220,15 @@ function _jailhouse_cell() {
 		;;
 	start)
 		# takes only one argument (id/name)
-		_jailhouse_get_id "${cur}" "${prev}" || return 1
+		_jailhouse_get_id "${cur}" "${prev}" no_root || return 1
 		;;
 	shutdown)
 		# takes only one argument (id/name)
-		_jailhouse_get_id "${cur}" "${prev}" || return 1
+		_jailhouse_get_id "${cur}" "${prev}" no_root || return 1
 		;;
 	destroy)
 		# takes only one argument (id/name)
-		_jailhouse_get_id "${cur}" "${prev}" || return 1
+		_jailhouse_get_id "${cur}" "${prev}" no_root || return 1
 		;;
 	linux)
 		_jailhouse_cell_linux || return 1
@@ -229,7 +243,7 @@ function _jailhouse_cell() {
 		return 0;;
 	stats)
 		# takes only one argument (id/name)
-		_jailhouse_get_id "${cur}" "${prev}" || return 1
+		_jailhouse_get_id "${cur}" "${prev}" with_root || return 1
 
 		if [ "${COMP_CWORD}" -eq 3 ]; then
 			COMPREPLY=( ${COMPREPLY[@]-} $( compgen -W "-h --help" \
@@ -286,7 +300,7 @@ function _jailhouse() {
 	local command command_cell command_config cur prev subcommand
 
 	# first level
-	command="enable disable cell config hardware --help"
+	command="enable disable console cell config hardware --help"
 
 	# second level
 	command_cell="create load start shutdown destroy linux list stats"
@@ -316,6 +330,12 @@ function _jailhouse() {
 		enable)
 			# a root-cell configuration
 			_filedir "cell"
+			;;
+		console)
+			if [[ "$cur" == -* ]]; then
+				COMPREPLY=( $( compgen -W "-f --follow" -- \
+					"${cur}") )
+			fi
 			;;
 		cell)
 			# one of the following subcommands

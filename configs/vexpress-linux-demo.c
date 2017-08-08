@@ -23,6 +23,7 @@ struct {
 } __attribute__((packed)) config = {
 	.cell = {
 		.signature = JAILHOUSE_CELL_DESC_SIGNATURE,
+		.revision = JAILHOUSE_CONFIG_REVISION,
 		.name = "linux-demo",
 		.flags = JAILHOUSE_CELL_PASSIVE_COMMREG,
 
@@ -55,8 +56,12 @@ struct {
 	},
 
 	.irqchips = {
-		/* GIC v3 */ {
-			.address = 0x2f000000, /* GIC v2: 0x2f001000 */
+		/* GIC */ {
+#ifdef CONFIG_ARM_GIC_V3
+			.address = 0x2f000000,
+#else /* GICv2 */
+			.address = 0x2f001000,
+#endif
 			.pin_base = 32,
 			.pin_bitmap = {
 				0x00000100,

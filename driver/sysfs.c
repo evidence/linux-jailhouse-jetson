@@ -1,7 +1,7 @@
 /*
  * Jailhouse, a Linux-based partitioning hypervisor
  *
- * Copyright (c) Siemens AG, 2014-2015
+ * Copyright (c) Siemens AG, 2014-2017
  *
  * Authors:
  *  Jan Kiszka <jan.kiszka@siemens.com>
@@ -19,6 +19,8 @@
 
 /* For compatibility with older kernel versions */
 #include <linux/version.h>
+#include <linux/gfp.h>
+#include <linux/stat.h>
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,11,0)
 #define DEVICE_ATTR_RO(_name) \
@@ -107,12 +109,14 @@ JAILHOUSE_CPU_STATS_ATTR(vmexits_cpuid, JAILHOUSE_CPU_STAT_VMEXITS_CPUID);
 JAILHOUSE_CPU_STATS_ATTR(vmexits_xsetbv, JAILHOUSE_CPU_STAT_VMEXITS_XSETBV);
 JAILHOUSE_CPU_STATS_ATTR(vmexits_exception,
 			 JAILHOUSE_CPU_STAT_VMEXITS_EXCEPTION);
-#elif defined(CONFIG_ARM)
+#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 JAILHOUSE_CPU_STATS_ATTR(vmexits_maintenance, JAILHOUSE_CPU_STAT_VMEXITS_MAINTENANCE);
 JAILHOUSE_CPU_STATS_ATTR(vmexits_virt_irq, JAILHOUSE_CPU_STAT_VMEXITS_VIRQ);
 JAILHOUSE_CPU_STATS_ATTR(vmexits_virt_sgi, JAILHOUSE_CPU_STAT_VMEXITS_VSGI);
 JAILHOUSE_CPU_STATS_ATTR(vmexits_psci, JAILHOUSE_CPU_STAT_VMEXITS_PSCI);
+#ifdef CONFIG_ARM
 JAILHOUSE_CPU_STATS_ATTR(vmexits_cp15, JAILHOUSE_CPU_STAT_VMEXITS_CP15);
+#endif
 #endif
 
 static struct attribute *no_attrs[] = {
@@ -128,12 +132,14 @@ static struct attribute *no_attrs[] = {
 	&vmexits_cpuid_attr.kattr.attr,
 	&vmexits_xsetbv_attr.kattr.attr,
 	&vmexits_exception_attr.kattr.attr,
-#elif defined(CONFIG_ARM)
+#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 	&vmexits_maintenance_attr.kattr.attr,
 	&vmexits_virt_irq_attr.kattr.attr,
 	&vmexits_virt_sgi_attr.kattr.attr,
 	&vmexits_psci_attr.kattr.attr,
+#ifdef CONFIG_ARM
 	&vmexits_cp15_attr.kattr.attr,
+#endif
 #endif
 	NULL
 };
@@ -303,6 +309,24 @@ void jailhouse_sysfs_cell_delete(struct cell *cell)
 	kobject_put(&cell->kobj);
 }
 
+static ssize_t console_show(struct device *dev, struct device_attribute *attr,
+			    char *buffer)
+{
+	ssize_t ret;
+
+	if (mutex_lock_interruptible(&jailhouse_lock) != 0)
+		return -EINTR;
+
+	ret = jailhouse_console_dump_delta(buffer, 0, NULL);
+	/* don't return error if jailhouse is not enabled */
+	if (ret == -EAGAIN)
+		ret = 0;
+
+	mutex_unlock(&jailhouse_lock);
+
+	return ret;
+}
+
 static ssize_t enabled_show(struct device *dev, struct device_attribute *attr,
 			    char *buffer)
 {
@@ -355,6 +379,15 @@ static ssize_t remap_pool_used_show(struct device *dev,
 	return info_show(dev, buffer, JAILHOUSE_INFO_REMAP_POOL_USED);
 }
 
+static ssize_t core_show(struct file *filp, struct kobject *kobj,
+			 struct bin_attribute *attr, char *buf, loff_t off,
+			 size_t count)
+{
+	return memory_read_from_buffer(buf, count, &off, hypervisor_mem,
+				       attr->size);
+}
+
+static DEVICE_ATTR_RO(console);
 static DEVICE_ATTR_RO(enabled);
 static DEVICE_ATTR_RO(mem_pool_size);
 static DEVICE_ATTR_RO(mem_pool_used);
@@ -362,6 +395,7 @@ static DEVICE_ATTR_RO(remap_pool_size);
 static DEVICE_ATTR_RO(remap_pool_used);
 
 static struct attribute *jailhouse_sysfs_entries[] = {
+	&dev_attr_console.attr,
 	&dev_attr_enabled.attr,
 	&dev_attr_mem_pool_size.attr,
 	&dev_attr_mem_pool_used.attr,
@@ -374,6 +408,23 @@ static struct attribute_group jailhouse_attribute_group = {
 	.name = NULL,
 	.attrs = jailhouse_sysfs_entries,
 };
+
+static struct bin_attribute bin_attr_core = {
+	.attr.name = "core",
+	.attr.mode = S_IRUSR,
+	.read = core_show,
+};
+
+int jailhouse_sysfs_core_init(struct device *dev, size_t hypervisor_size)
+{
+	bin_attr_core.size = hypervisor_size;
+	return sysfs_create_bin_file(&dev->kobj, &bin_attr_core);
+}
+
+void jailhouse_sysfs_core_exit(struct device *dev)
+{
+	sysfs_remove_bin_file(&dev->kobj, &bin_attr_core);
+}
 
 int jailhouse_sysfs_init(struct device *dev)
 {

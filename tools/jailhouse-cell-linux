@@ -2,7 +2,7 @@
 
 # Jailhouse, a Linux-based partitioning hypervisor
 #
-# Copyright (c) Siemens AG, 2015
+# Copyright (c) Siemens AG, 2015-2016
 #
 # Authors:
 #  Jan Kiszka <jan.kiszka@siemens.com>
@@ -19,9 +19,451 @@ import os
 import struct
 import sys
 
-PARAMS_BASE = 0xf5000
-
 libexecdir = None
+
+
+def page_align(value, page_size=0x1000):
+    return (value + page_size - 1) & ~(page_size - 1)
+
+
+def unpack_cstring(blob):
+    string = ''
+    pos = 0
+    (byte,) = struct.unpack_from('B', blob[pos:pos+1])
+    while byte != 0:
+        string += chr(byte)
+        pos += 1
+        (byte,) = struct.unpack_from('B', blob[pos:pos+1])
+    return string
+
+
+class DTBHeader:
+    def __init__(self, blob):
+        (self.total_size, self.off_dt_struct, self.off_dt_strings,
+         self.off_mem_rsvmap, self.version, self.last_comp_version,
+         self.boot_cpuid_phys, self.size_dt_strings, self.size_dt_struct) = \
+            struct.unpack_from('>4x9I', blob)
+        if self.version < 17 or self.last_comp_version > 17:
+            print('Unsupported DTB version %d' % self.version)
+            exit(1)
+        self.header_blob = blob
+
+    def get(self):
+        return struct.pack('>10I', 0xd00dfeed, self.total_size,
+                           self.off_dt_struct, self.off_dt_strings,
+                           self.off_mem_rsvmap, self.version,
+                           self.last_comp_version, self.boot_cpuid_phys,
+                           self.size_dt_strings, self.size_dt_struct)
+
+
+class DTBReserveMap:
+    def __init__(self, blob):
+        self.blob = blob[0:16]
+        pos = 0
+        while struct.unpack_from('>8xQ', self.blob[pos:pos+16]) != (0,):
+            self.blob += blob[pos+16:pos+32]
+            pos += 16
+
+
+class DTBStrings:
+    def __init__(self, blob):
+        self.blob = blob
+
+    def add(self, string):
+        offset = len(self.blob)
+        self.blob += string.encode() + b'\0'
+        return offset
+
+    def get(self, off):
+        strings = str(self.blob.decode())
+        return strings[off:].split('\0', 1)[0]
+
+
+OF_DT_BEGIN_NODE = 0x00000001
+OF_DT_END_NODE = 0x00000002
+OF_DT_PROP = 0x00000003
+OF_DT_END = 0x00000009
+
+
+class DTBProperty:
+    def __init__(self, name_off, value, strings):
+        self.name_off = name_off
+        self.name = strings.get(self.name_off)
+        self.data = value
+
+    @staticmethod
+    def parse(blob, strings):
+        (datasize, name_off) = struct.unpack_from('>II', blob)
+        data = blob[8:8+datasize]
+        prop = DTBProperty(name_off, data, strings)
+        length = 8 + (datasize + 3) & ~3
+        return (prop, length)
+
+    @staticmethod
+    def create(name, value, strings):
+        return DTBProperty(strings.add(name), value, strings)
+
+    def set_value(self, value):
+        self.data = value
+
+    def get(self):
+        datasize = len(self.data)
+        blob = struct.pack('>III', OF_DT_PROP, datasize, self.name_off)
+        blob += self.data
+        if datasize & 3 != 0:
+            blob += bytearray(4 - datasize & 3)
+        return blob
+
+
+class DTBNode:
+    def __init__(self, name, children, properties, strings):
+        self.name = name
+        self.children = children
+        self.properties = properties
+        self.strings = strings
+
+    @staticmethod
+    def parse(blob, strings):
+        name = unpack_cstring(blob)
+        # next field is word-aligned
+        length = ((len(name) + 1) + 3) & ~3
+
+        children = []
+        properties = []
+
+        while True:
+            (token,) = struct.unpack_from('>I', blob[length:])
+            length += 4
+            if token == OF_DT_BEGIN_NODE:
+                (child, child_length) = DTBNode.parse(blob[length:], strings)
+                length += child_length
+                children.append(child)
+            elif token == OF_DT_PROP:
+                (prop, prop_length) = DTBProperty.parse(blob[length:], strings)
+                length += prop_length
+                properties.append(prop)
+            elif token == OF_DT_END_NODE:
+                break
+            else:
+                raise RuntimeError('Invalid DTB')
+
+        return (DTBNode(name, children, properties, strings), length)
+
+    def find(self, path):
+        if path == '':
+            return self
+        if path.find('/') >= 0:
+            (childname, subpath) = path.split('/', 1)
+        else:
+            childname = path
+            subpath = ''
+        matches = [c for c in self.children if c.name == childname]
+        if len(matches) > 1:
+            raise RuntimeError('Invalid DTB')
+        if not matches:
+            return None
+        else:
+            return matches[0].find(subpath)
+
+    def add_node(self, name):
+        child = DTBNode(name, [], [], self.strings)
+        self.children.append(child)
+        return child
+
+    def get_prop(self, name):
+        matches = [p for p in self.properties if p.name == name]
+        if len(matches) > 1:
+            raise RuntimeError('Invalid DTB')
+        return matches[0] if matches else None
+
+    def add_prop(self, name, value):
+        prop = DTBProperty.create(name, value, self.strings)
+        self.properties.append(prop)
+
+    def get(self):
+        namelen = ((len(self.name) + 1) + 3) & ~3
+        blob = struct.pack('>I%ds' % namelen, OF_DT_BEGIN_NODE,
+                           self.name.encode())
+        for prop in self.properties:
+            blob += prop.get()
+        for child in self.children:
+            blob += child.get()
+        return blob + struct.pack('>I', OF_DT_END_NODE)
+
+
+class DTB:
+    def __init__(self, blob):
+        self.header = DTBHeader(blob[0:40])
+
+        self.rsvmap = DTBReserveMap(blob[self.header.off_mem_rsvmap:])
+
+        end_idx = self.header.off_dt_strings + self.header.size_dt_strings
+        self.strings = DTBStrings(blob[self.header.off_dt_strings:end_idx])
+
+        start_idx = self.header.off_dt_struct
+        end_idx = start_idx + self.header.size_dt_struct
+
+        (begin_token,) = struct.unpack_from('>I', blob[start_idx:end_idx])
+        if begin_token != OF_DT_BEGIN_NODE:
+            raise RuntimeError('Invalid DTB')
+        (self.root_node, length) = DTBNode.parse(blob[start_idx+4:end_idx],
+                                                 self.strings)
+
+    def get_prop(self, path, name):
+        node = self.root_node.find(path[path.find('/')+1:])
+        if not node:
+            raise RuntimeError('DTB is missing node %s' % path)
+        prop = node.get_prop(name)
+        return prop.data if prop else None
+
+    def set_prop(self, path, name, value):
+        subpath = path[path.find('/')+1:]
+        node = self.root_node.find(subpath)
+        if not node:
+            (parent_path, new_node) = path.rsplit('/')
+            parent = self.root_node.find(parent_path)
+            node = parent.add_node(new_node)
+        prop = node.get_prop(name)
+        if prop:
+            prop.set_value(value)
+        else:
+            node.add_prop(name, value)
+
+    def get(self):
+        nodes = self.root_node.get() + struct.pack('>I', OF_DT_END)
+        self.header.off_mem_rsvmap = 40
+        self.header.off_dt_struct = 40 + len(self.rsvmap.blob)
+        self.header.size_dt_struct = len(nodes)
+        self.header.off_dt_strings = self.header.off_dt_struct + len(nodes)
+        self.header.size_dt_strings = len(self.strings.blob)
+        self.header.total_size = self.header.off_dt_strings + \
+            len(self.strings.blob)
+
+        return self.header.get() + self.rsvmap.blob + nodes + self.strings.blob
+
+
+class X86:
+    name = 'x86'
+
+    def setup(self, args, config):
+        self._zero_page = X86ZeroPage(args.kernel, args.initrd, config)
+
+        setup_data = x86_gen_setup_data()
+
+        self._zero_page.setup_header.set_setup_data(
+            arch.params_address() + 0x1000)
+        self._zero_page.setup_header.set_cmd_line_ptr(
+            self._zero_page.setup_header.setup_data + len(setup_data))
+
+        self.params = self._zero_page.get_data() + setup_data + \
+            (args.cmdline.encode() if args.cmdline else b'') + b'\0'
+
+    def write_params(self, args, config):
+        args.write_params.write(arch.params)
+        args.write_params.close()
+
+        print('\
+Boot parameters written. Start Linux with the following commands (adjusting \
+paths as needed):\n\
+\n\
+jailhouse cell create %s\n\
+jailhouse cell load %s linux-loader.bin -a 0x%x %s -a 0x%x ' %
+              (args.config.name, config.name, self.loader_address(),
+               args.kernel.name, self._zero_page.kernel_load_addr),
+              end='')
+        if args.initrd:
+            print('%s -a 0x%x ' % (args.initrd.name,
+                                   self._zero_page.setup_header.ramdisk_image),
+                  end='')
+        print('%s -a 0x%x' % (args.write_params.name, arch.params_address()))
+        print('jailhouse cell start %s' % config.name)
+
+    @staticmethod
+    def loader_address():
+        return 0xf0000
+
+    @staticmethod
+    def params_address():
+        return 0xf5000
+
+    def kernel_address(self):
+        return self._zero_page.kernel_load_addr
+
+    def dtb_address(self):
+        return None
+
+    def dtb(self):
+        return None
+
+    def ramdisk_address(self):
+        return self._zero_page.setup_header.ramdisk_image
+
+
+class ARMCommon:
+    def setup(self, args, config):
+        kernel_size = page_align(os.fstat(args.kernel.fileno()).st_size)
+        kernel_load_offset = self.get_kernel_offset(args.kernel)
+        image_size = kernel_load_offset + kernel_size + self.kernel_alignment()
+
+        ramdisk_size = 0
+        if args.initrd:
+            ramdisk_size = page_align(os.fstat(args.initrd.fileno()).st_size)
+            # leave sufficient space between the kernel and the initrd
+            image_size += kernel_size * 4
+            kernel_size *= 5
+
+        if not args.dtb:
+            print('No device tree specified', file=sys.stderr)
+            exit(1)
+        # add one page to the DTB size to be safe when extending it
+        dtb_size = page_align(os.fstat(args.dtb.fileno()).st_size) + 0x1000
+        image_size += dtb_size
+
+        # add some pages in case the region contains the loader
+        image_size += 0x2000
+
+        ram_regions = [region for region in config.memory_regions
+                       if region.is_ram() and region.size >= image_size]
+        if not ram_regions:
+            print('No space found to load all images', file=sys.stderr)
+            exit(1)
+
+        self._dtb_addr = ram_regions[0].virt_start
+        if self._dtb_addr == 0:
+            # leave room for the loader
+            self._dtb_addr += 0x2000
+        self._kernel_addr = page_align(self._dtb_addr + dtb_size,
+                                       self.kernel_alignment())
+        self._kernel_addr += kernel_load_offset
+        self._ramdisk_addr = self._kernel_addr + kernel_size
+
+        self.params = 'kernel=0x%x dtb=0x%x' % (self._kernel_addr,
+                                                self._dtb_addr)
+        self.params = self.params.encode()
+
+        self.dtb = DTB(args.dtb.read())
+
+        prop = self.dtb.get_prop('/', '#address-cells')
+        if not prop:
+            raise RuntimeError('Invalid DTB')
+        (cells,) = struct.unpack_from('>I', prop)
+        addr_format = '>Q' if cells == 2 else '>I'
+
+        prop = self.dtb.get_prop('/', '#size-cells')
+        if not prop:
+            raise RuntimeError('Invalid DTB')
+        (cells,) = struct.unpack_from('>I', prop)
+        reg_format = addr_format + ('Q' if cells == 2 else 'I')
+
+        self.dtb.set_prop('/memory', 'device_type', 'memory'.encode() + b'\0')
+        reg = bytearray(0)
+        for region in config.memory_regions:
+            # Filter out non-RAM regions and small ones at the start of the
+            # cell address space that is used for the loader.
+            if region.is_ram() and \
+               (region.virt_start > 0 or region.size > 0x10000):
+                reg += struct.pack(reg_format, region.virt_start, region.size)
+        self.dtb.set_prop('/memory', 'reg', reg)
+
+        if args.cmdline:
+            self.dtb.set_prop('/chosen', 'bootargs',
+                              args.cmdline.encode() + b'\0')
+        if args.initrd:
+            self.dtb.set_prop('/chosen', 'linux,initrd-start',
+                              struct.pack(addr_format, arch.ramdisk_address()))
+            end_addr = arch.ramdisk_address() + ramdisk_size
+            self.dtb.set_prop('/chosen', 'linux,initrd-end',
+                              struct.pack(addr_format, end_addr))
+
+    def write_params(self, args, config):
+        args.write_params.write(self.dtb.get())
+        args.write_params.close()
+
+        print('\
+Modified device tree written. Start Linux with the following commands \
+(adjusting paths as needed):\n\
+\n\
+jailhouse cell create %s\n\
+jailhouse cell load %s linux-loader.bin -s "%s" -a 0x%x %s -a 0x%x ' %
+              (args.config.name, config.name, self.params.decode(),
+               self.params_address(), args.kernel.name, self._kernel_addr),
+              end='')
+        if args.initrd:
+            print('%s -a 0x%x ' % (args.initrd.name, self._ramdisk_addr),
+                  end='')
+        print('%s -a 0x%x' % (args.write_params.name, self._dtb_addr))
+        print('jailhouse cell start %s' % config.name)
+
+    @staticmethod
+    def loader_address():
+        return 0
+
+    def kernel_address(self):
+        return self._kernel_addr
+
+    def dtb_address(self):
+        return self._dtb_addr
+
+    def dtb(self):
+        return self.dtb.get()
+
+    def ramdisk_address(self):
+        return self._ramdisk_addr
+
+
+class ARM(ARMCommon):
+    name = 'arm'
+
+    @staticmethod
+    def params_address():
+        return 0x100
+
+    @staticmethod
+    def kernel_alignment():
+        return 0x1000
+
+    @staticmethod
+    def get_kernel_offset(kernel):
+        return 0
+
+
+class ARM64(ARMCommon):
+    name = 'arm64'
+
+    @staticmethod
+    def params_address():
+        return 0x1000
+
+    @staticmethod
+    def kernel_alignment():
+        return 0x200000
+
+    @staticmethod
+    def get_kernel_offset(kernel):
+        kernel.seek(8)
+        (text_offset,) = struct.unpack_from('<Q', kernel.read(8))
+        return text_offset
+
+
+def resolve_arch(defined_arch=None):
+    arch_classes = {'x86': X86, 'arm': ARM, 'arm64': ARM64, None: None}
+    try:
+        arch_class = arch_classes[defined_arch]
+    except KeyError:
+        print('Unknown architecture', file=sys.stderr)
+        exit(1)
+    if not arch_class:
+        arch_str = os.uname()[4]
+        if arch_str in ('i686', 'x86_64'):
+            arch_class = X86
+        elif arch_str == 'armv7l':
+            arch_class = ARM
+        elif arch_str == 'aarch64':
+            arch_class = ARM64
+        else:
+            print('Unsupported architecture', file=sys.stderr)
+            exit(1)
+    return arch_class()
 
 
 class MemoryRegion:
@@ -69,12 +511,15 @@ class MemoryRegion:
 
 
 class Config:
-    _HEADER_FORMAT = '8x32s4xIIIIIIII'
+    _HEADER_FORMAT = '6sH32s4xIIIIIIIII'
+    _HEADER_REVISION = 4
 
     def __init__(self, config_file):
         self.data = config_file.read()
 
-        (name,
+        (signature,
+         revision,
+         name,
          self.flags,
          self.cpu_set_size,
          self.num_memory_regions,
@@ -82,8 +527,16 @@ class Config:
          self.num_irqchips,
          self.pio_bitmap_size,
          self.num_pci_devices,
-         self.num_pci_caps) = \
+         self.num_pci_caps,
+         self.vpci_irq_base) = \
             struct.unpack_from(Config._HEADER_FORMAT, self.data)
+        if str(signature.decode()) != 'JHCELL':
+            print('Not a cell configuration: %s' % config_file.name,
+                  file=sys.stderr)
+            exit(1)
+        if revision != Config._HEADER_REVISION:
+            print('Configuration file revision mismatch', file=sys.stderr)
+            exit(1)
         self.name = str(name.decode())
 
         memregion_offs = struct.calcsize(Config._HEADER_FORMAT) + \
@@ -95,12 +548,14 @@ class Config:
             memregion_offs += MemoryRegion.SIZE
 
 
-class SetupHeader:
-    _HEADER_FORMAT = 'xB2xI8xH14xB7xII8xI4xI28xQ'
+# see linux/Documentation/x86/boot.txt
+class X86SetupHeader:
+    BASE_OFFSET = 0x1f0
+    _HEADER_FORMAT = 'xB2xI8xH14xB7xII8xI4xI28xQQ'
 
     def __init__(self, kernel):
-        kernel.seek(0x1f0)
-        parse_size = struct.calcsize(SetupHeader._HEADER_FORMAT)
+        kernel.seek(X86SetupHeader.BASE_OFFSET)
+        parse_size = struct.calcsize(X86SetupHeader._HEADER_FORMAT)
         (self.setup_sects,
          self.syssize,
          self.jump,
@@ -109,57 +564,92 @@ class SetupHeader:
          self.ramdisk_size,
          self.cmd_line_ptr,
          self.kernel_alignment,
-         self.setup_data) = \
-            struct.unpack(SetupHeader._HEADER_FORMAT, kernel.read(parse_size))
+         self.setup_data,
+         self.pref_address) = \
+            struct.unpack(X86SetupHeader._HEADER_FORMAT,
+                          kernel.read(parse_size))
 
-        self.size = 0x202 + (self.jump >> 8) - 0x1f0
-        kernel.seek(0x1f0)
+        self.size = 0x202 + (self.jump >> 8) - X86SetupHeader.BASE_OFFSET
+        kernel.seek(X86SetupHeader.BASE_OFFSET)
         self.data = bytearray(kernel.read(self.size))
 
+    def set_value_in_data(self, fmt, offset, value):
+        struct.pack_into(fmt, self.data, offset - X86SetupHeader.BASE_OFFSET,
+                         value)
+
+    def set_type_of_loader(self, value):
+        self.type_of_loader = value
+        self.set_value_in_data('B', 0x210, value)
+
+    def set_ramdisk_image(self, value):
+        self.ramdisk_image = value
+        self.set_value_in_data('I', 0x218, value)
+
+    def set_ramdisk_size(self, value):
+        self.ramdisk_size = value
+        self.set_value_in_data('I', 0x21c, value)
+
+    def set_cmd_line_ptr(self, value):
+        self.cmd_line_ptr = value
+        self.set_value_in_data('I', 0x228, value)
+
+    def set_kernel_alignment(self, value):
+        self.kernel_alignment = value
+        self.set_value_in_data('Q', 0x230, value)
+
+    def set_setup_data(self, value):
+        self.setup_data = value
+        self.set_value_in_data('Q', 0x250, value)
+
+    def set_pref_address(self, value):
+        self.pref_address = value
+        self.set_value_in_data('Q', 0x258, value)
+
     def get_data(self):
-        struct.pack_into(SetupHeader._HEADER_FORMAT, self.data, 0,
-                         self.setup_sects, self.syssize, self.jump,
-                         self.type_of_loader, self.ramdisk_image,
-                         self.ramdisk_size, self.cmd_line_ptr,
-                         self.kernel_alignment, self.setup_data)
         return self.data
 
 
-class ZeroPage:
+# see linux/Documentation/x86/zero-page.txt
+class X86ZeroPage:
     def __init__(self, kernel, initrd, config):
-        self.setup_header = SetupHeader(kernel)
+        self.setup_header = X86SetupHeader(kernel)
 
         prot_image_offs = (self.setup_header.setup_sects + 1) * 512
         prot_image_size = self.setup_header.syssize * 16
 
-        self.kernel_load_addr = self.setup_header.kernel_alignment - \
+        self.kernel_load_addr = self.setup_header.pref_address - \
             prot_image_offs
 
-        self.setup_header.type_of_loader = 0xff
+        self.setup_header.set_kernel_alignment(self.setup_header.pref_address)
+        self.setup_header.set_type_of_loader(0xff)
 
+        ramdisk_size = 0
+        ramdisk_load_addr = 0
         if initrd:
             kernel_size = os.fstat(kernel.fileno()).st_size
-            self.setup_header.ramdisk_size = os.fstat(initrd.fileno()).st_size
-            self.setup_header.ramdisk_image = \
-                (self.kernel_load_addr - self.setup_header.ramdisk_size) & \
-                ~0xfff
-        else:
-            self.setup_header.ramdisk_image = 0
-            self.setup_header.ramdisk_size = 0
+            ramdisk_size = os.fstat(initrd.fileno()).st_size
+            # same as arm, magic factor 5 works, anything below does not
+            ramdisk_load_addr = page_align(self.kernel_load_addr +
+                                           5 * kernel_size)
+
+        self.setup_header.set_ramdisk_image(ramdisk_load_addr)
+        self.setup_header.set_ramdisk_size(ramdisk_size)
 
         self.e820_entries = []
         for region in config.memory_regions:
             if region.is_ram() or region.is_comm_region():
                 if len(self.e820_entries) >= 128:
-                    print("Too many memory regions", file=sys.stderr)
+                    print('Too many memory regions', file=sys.stderr)
                     exit(1)
                 self.e820_entries.append(region)
 
     def get_data(self):
         data = bytearray(0x1e8) + \
             struct.pack('B', len(self.e820_entries)) + \
-            bytearray(0x1f0 - 0x1e9) + self.setup_header.get_data() + \
-            bytearray(0x2d0 - 0x1f0 - self.setup_header.size)
+            bytearray(X86SetupHeader.BASE_OFFSET - 0x1e9) + \
+            self.setup_header.get_data() + \
+            bytearray(0x2d0 - X86SetupHeader.BASE_OFFSET -
+                      self.setup_header.size)
         for region in self.e820_entries:
             data += region.as_e820()
         return data + bytearray(0x1000 - len(data))
@@ -173,7 +663,7 @@ class JailhouseCell:
     JAILHOUSE_CELL_ID_UNUSED = -1
 
     def __init__(self, config):
-        self.name = config.name.encode('utf-8')
+        self.name = config.name.encode()
 
         self.dev = open('/dev/jailhouse')
 
@@ -199,7 +689,7 @@ class JailhouseCell:
         fcntl.ioctl(self.dev, JailhouseCell.JAILHOUSE_CELL_START, start)
 
 
-def gen_setup_data():
+def x86_gen_setup_data():
     MAX_CPUS = 255
     return struct.pack('8x4sI4x', b'JLHS', 4 + MAX_CPUS) + bytearray(MAX_CPUS)
 
@@ -213,6 +703,8 @@ parser.add_argument('config', metavar='CELLCONFIG',
                     help='cell configuration file')
 parser.add_argument('kernel', metavar='KERNEL', type=argparse.FileType('rb'),
                     help='image of the kernel to be booted')
+parser.add_argument('--dtb', '-d', metavar='DTB', type=argparse.FileType('rb'),
+                    help='device tree for the kernel [arm/arm64 only]')
 parser.add_argument('--initrd', '-i', metavar='FILE',
                     type=argparse.FileType('rb'),
                     help='initrd/initramfs for the kernel')
@@ -224,6 +716,8 @@ parser.add_argument('--write-params', '-w', metavar='FILE',
                          'parameters into the specified file and print '
                          'required jailhouse cell commands to boot Linux '
                          'to the console')
+parser.add_argument('--arch', '-a', metavar='ARCH',
+                    help='target architecture')
 
 try:
     args = parser.parse_args()
@@ -231,57 +725,27 @@ except IOError as e:
     print(e.strerror, file=sys.stderr)
     exit(1)
 
+arch = resolve_arch(args.arch)
 config = Config(args.config)
 
-zero_page = ZeroPage(args.kernel, args.initrd, config)
-
-setup_data = gen_setup_data()
-
-zero_page.setup_header.setup_data = PARAMS_BASE + 0x1000
-zero_page.setup_header.cmd_line_ptr = \
-    zero_page.setup_header.setup_data + len(setup_data)
-
-params = zero_page.get_data() + setup_data + \
-    (args.cmdline.encode() if args.cmdline else b'') + b'\0'
+arch.setup(args, config)
 
 if args.write_params:
-    args.write_params.write(params)
-    args.write_params.close()
-
-    print("\
-Boot parameters written. Start Linux with the following commands (adjusting \
-paths as needed):\n\
-\n\
-jailhouse cell create %s\n\
-jailhouse cell load %s linux-loader.bin -a 0xf0000 %s -a 0x%x " %
-          (args.config.name, config.name, args.kernel.name,
-           zero_page.kernel_load_addr),
-          end="")
-    if args.initrd:
-        print("%s -a 0x%x " %
-              (args.initrd.name, zero_page.setup_header.ramdisk_image),
-              end="")
-    print("%s -a 0x%x" % (args.write_params.name, PARAMS_BASE))
-    print("jailhouse cell start %s" % config.name)
+    arch.write_params(args, config)
 else:
-    arch_str = os.uname()[4]
-    if arch_str in ('i686', 'x86_64'):
-        srcarch = 'x86'
-    else:
-        print("Unsupported architecture", file=sys.stderr)
-        exit(1)
-
     if libexecdir:
         linux_loader = libexecdir + '/jailhouse/linux-loader.bin'
     else:
         linux_loader = os.path.abspath(os.path.dirname(sys.argv[0])) + \
-            '/../inmates/tools/' + srcarch + '/linux-loader.bin'
+            '/../inmates/tools/' + arch.name + '/linux-loader.bin'
 
     cell = JailhouseCell(config)
-    cell.load(open(linux_loader, mode='rb').read(), 0xf0000)
+    cell.load(open(linux_loader, mode='rb').read(), arch.loader_address())
     args.kernel.seek(0)
-    cell.load(args.kernel.read(), zero_page.kernel_load_addr)
+    cell.load(args.kernel.read(), arch.kernel_address())
+    if arch.dtb_address():
+        cell.load(arch.dtb.get(), arch.dtb_address())
     if args.initrd:
-        cell.load(args.initrd.read(), zero_page.setup_header.ramdisk_image)
-    cell.load(params, PARAMS_BASE)
+        cell.load(args.initrd.read(), arch.ramdisk_address())
+    cell.load(arch.params, arch.params_address())
     cell.start()

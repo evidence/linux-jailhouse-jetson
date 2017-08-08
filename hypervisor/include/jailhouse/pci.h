@@ -33,7 +33,7 @@
 
 #define PCI_NUM_BARS		6
 
-#define PCI_DEV_CLASS_MEM	0x05
+#define PCI_DEV_CLASS_OTHER	0xff
 
 #define PCI_CAP_MSI		0x05
 #define PCI_CAP_MSIX		0x11
@@ -41,6 +41,7 @@
 #define PCI_IVSHMEM_NUM_MMIO_REGIONS	2
 
 struct cell;
+struct ivshmem_endpoint;
 
 /**
  * @defgroup PCI PCI Subsystem
@@ -135,7 +136,7 @@ struct pci_device {
 	/** Shadow state of MSI-X config space registers. */
 	union pci_msix_registers msix_registers;
 	/** ivshmem specific data. */
-	struct pci_ivshmem_endpoint *ivshmem_endpoint;
+	struct ivshmem_endpoint *ivshmem_endpoint;
 	/** Real MSI-X table. */
 	union pci_msix_vector *msix_table;
 	/** Shadow state of MSI-X table. */
@@ -158,7 +159,10 @@ enum pci_access pci_cfg_read_moderate(struct pci_device *device, u16 address,
 enum pci_access pci_cfg_write_moderate(struct pci_device *device, u16 address,
 				       unsigned int size, u32 value);
 
+void pci_reset_device(struct pci_device *device);
+
 int pci_cell_init(struct cell *cell);
+void pci_cell_reset(struct cell *cell);
 void pci_cell_exit(struct cell *cell);
 
 void pci_config_commit(struct cell *cell_added_removed);
@@ -243,17 +247,5 @@ int arch_pci_update_msi(struct pci_device *device,
  */
 int arch_pci_update_msix_vector(struct pci_device *device, unsigned int index);
 
-/**
- * @defgroup PCI-IVSHMEM ivshmem
- * @{
- */
-int pci_ivshmem_init(struct cell *cell, struct pci_device *device);
-void pci_ivshmem_exit(struct pci_device *device);
-int pci_ivshmem_update_msix(struct pci_device *device);
-enum pci_access pci_ivshmem_cfg_write(struct pci_device *device,
-				      unsigned int row, u32 mask, u32 value);
-enum pci_access pci_ivshmem_cfg_read(struct pci_device *device, u16 address,
-				     u32 *value);
-/** @} PCI-IVSHMEM */
 /** @} PCI */
 #endif /* !_JAILHOUSE_PCI_H */

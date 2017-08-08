@@ -33,6 +33,9 @@ struct cell root_cell;
 static DEFINE_SPINLOCK(shutdown_lock);
 static unsigned int num_cells = 1;
 
+volatile unsigned long panic_in_progress;
+unsigned long panic_cpu = -1;
+
 /**
  * CPU set iterator.
  * @param cpu		Previous CPU ID.
@@ -69,6 +72,10 @@ bool cpu_id_valid(unsigned long cpu_id)
 		test_bit(cpu_id, system_cpu_set));
 }
 
+/*
+ * Suspend all CPUs assigned to the cell except the one executing
+ * the function (if it is in the cell's CPU set) to prevent races.
+ */
 static void cell_suspend(struct cell *cell, struct per_cpu *cpu_data)
 {
 	unsigned int cpu;
@@ -207,6 +214,7 @@ void config_commit(struct cell *cell_added_removed)
 		arch_flush_cell_vcpu_caches(cell_added_removed);
 
 	arch_config_commit(cell_added_removed);
+	pci_config_commit(cell_added_removed);
 }
 
 static bool address_in_region(unsigned long addr,
@@ -305,6 +313,7 @@ static void cell_destroy_internal(struct per_cpu *cpu_data, struct cell *cell)
 			remap_to_root_cell(mem, WARN_ON_ERROR);
 	}
 
+	pci_cell_exit(cell);
 	arch_cell_destroy(cell);
 
 	config_commit(cell);
@@ -401,6 +410,14 @@ static int cell_create(struct per_cpu *cpu_data, unsigned long config_address)
 	if (err)
 		goto err_cell_exit;
 
+	err = pci_cell_init(cell);
+	if (err)
+		goto err_arch_destroy;
+
+	/*
+	 * Shrinking: the new cell's CPUs are parked, then removed from the root
+	 * cell, assigned to the new cell and get their stats cleared.
+	 */
 	for_each_cpu(cpu, cell->cpu_set) {
 		arch_park_cpu(cpu);
 
@@ -456,8 +473,10 @@ static int cell_create(struct per_cpu *cpu_data, unsigned long config_address)
 
 err_destroy_cell:
 	cell_destroy_internal(cpu_data, cell);
-	/* cell_destroy_internal already calls cell_exit */
+	/* cell_destroy_internal already calls arch_cell_destroy & cell_exit */
 	goto err_free_cell;
+err_arch_destroy:
+	arch_cell_destroy(cell);
 err_cell_exit:
 	cell_exit(cell);
 err_free_cell:
@@ -539,6 +558,7 @@ static int cell_start(struct per_cpu *cpu_data, unsigned long id)
 	cell->comm_page.comm_region.cell_state = JAILHOUSE_CELL_RUNNING;
 	cell->comm_page.comm_region.msg_to_cell = JAILHOUSE_MSG_NONE;
 
+	pci_cell_reset(cell);
 	arch_cell_reset(cell);
 
 	for_each_cpu(cpu, cell->cpu_set) {
@@ -652,7 +672,17 @@ static int cell_get_state(struct per_cpu *cpu_data, unsigned long id)
 	return -ENOENT;
 }
 
-static int shutdown(struct per_cpu *cpu_data)
+/**
+ * Perform all CPU-unrelated hypervisor shutdown steps.
+ */
+void shutdown(void)
+{
+	pci_prepare_handover();
+	arch_shutdown();
+	pci_shutdown();
+}
+
+static int hypervisor_disable(struct per_cpu *cpu_data)
 {
 	unsigned int this_cpu = cpu_data->cpu_id;
 	unsigned int cpu;
@@ -692,7 +722,7 @@ static int shutdown(struct per_cpu *cpu_data)
 	if (cpu_data->shutdown_state == SHUTDOWN_NONE) {
 		if (num_cells == 1) {
 			printk("Shutting down hypervisor\n");
-			arch_shutdown();
+			shutdown();
 			state = SHUTDOWN_STARTED;
 		} else {
 			state = -EBUSY;
@@ -776,7 +806,7 @@ long hypercall(unsigned long code, unsigned long arg1, unsigned long arg2)
 
 	switch (code) {
 	case JAILHOUSE_HC_DISABLE:
-		return shutdown(cpu_data);
+		return hypervisor_disable(cpu_data);
 	case JAILHOUSE_HC_CELL_CREATE:
 		return cell_create(cpu_data, arg1);
 	case JAILHOUSE_HC_CELL_START:
@@ -791,6 +821,12 @@ long hypercall(unsigned long code, unsigned long arg1, unsigned long arg2)
 		return cell_get_state(cpu_data, arg1);
 	case JAILHOUSE_HC_CPU_GET_INFO:
 		return cpu_get_info(cpu_data, arg1, arg2);
+	case JAILHOUSE_HC_DEBUG_CONSOLE_PUTC:
+		if (!(cpu_data->cell->config->flags &
+		      JAILHOUSE_CELL_DEBUG_CONSOLE))
+			return -EPERM;
+		printk("%c", (char)arg1);
+		return 0;
 	default:
 		return -ENOSYS;
 	}

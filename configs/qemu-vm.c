@@ -4,7 +4,7 @@
  * Test configuration for QEMU Q35 VM, 1 GB RAM, 4 cores,
  * 6 MB hypervisor, 60 MB inmates (-4K shared mem device)
  *
- * Copyright (c) Siemens AG, 2013-2015
+ * Copyright (c) Siemens AG, 2013-2016
  *
  * Authors:
  *  Jan Kiszka <jan.kiszka@siemens.com>
@@ -12,17 +12,7 @@
  * This work is licensed under the terms of the GNU GPL, version 2.  See
  * the COPYING file in the top-level directory.
  *
- * QEMU command line for Intel-based setups:
- * qemu-system-x86_64 -machine q35 -m 1G -enable-kvm -smp 4 \
- *  -drive file=/path/to/image,id=disk,if=none -device ide-hd,drive=disk \
- *  -virtfs local,path=/local/path,security_model=passthrough,mount_tag=host \
- *  -cpu kvm64,-kvm_pv_eoi,-kvm_steal_time,-kvm_asyncpf,-kvmclock,+vmx,+x2apic
- *
- * QEMU command line for AMD-based setups:
- * qemu-system-x86_64 /path/to/image -m 1G -enable-kvm -smp 4 \
- *  -virtfs local,path=/local/path,security_model=passthrough,mount_tag=host \
- *  -cpu host,-kvm_pv_eoi,-kvm_steal_time,-kvm_asyncpf,-kvmclock,+svm,+x2apic
- *
+ * See README.md for QEMU command lines on Intel and AMD.
  * Guest kernel command line appendix: memmap=66M$0x3b000000
  */
 
@@ -34,33 +24,40 @@
 struct {
 	struct jailhouse_system header;
 	__u64 cpus[1];
-	struct jailhouse_memory mem_regions[13];
+	struct jailhouse_memory mem_regions[16];
 	struct jailhouse_irqchip irqchips[1];
 	__u8 pio_bitmap[0x2000];
-	struct jailhouse_pci_device pci_devices[8];
-	struct jailhouse_pci_capability pci_caps[5];
+	struct jailhouse_pci_device pci_devices[9];
+	struct jailhouse_pci_capability pci_caps[11];
 } __attribute__((packed)) config = {
 	.header = {
 		.signature = JAILHOUSE_SYSTEM_SIGNATURE,
+		.revision = JAILHOUSE_CONFIG_REVISION,
 		.hypervisor_memory = {
 			.phys_start = 0x3b000000,
 			.size = 0x600000,
 		},
 		.debug_console = {
-			.phys_start = 0x3f8,
+			.address = 0x3f8,
+			/* .divider = 0x1, */
+			.flags = JAILHOUSE_CON1_TYPE_8250 |
+				 JAILHOUSE_CON1_ACCESS_PIO |
+				 JAILHOUSE_CON2_TYPE_ROOTPAGE,
 		},
-		.platform_info.x86 = {
-			.mmconfig_base = 0xb0000000,
-			.mmconfig_end_bus = 0xff,
-			.pm_timer_address = 0x608,
-			.iommu_units = {
-				{
-					.base = 0xfed90000,
-					.size = 0x1000,
+		.platform_info = {
+			.pci_mmconfig_base = 0xb0000000,
+			.pci_mmconfig_end_bus = 0xff,
+			.x86 = {
+				.pm_timer_address = 0x608,
+				.vtd_interrupt_limit = 256,
+				.iommu_units = {
+					{
+						.base = 0xfed90000,
+						.size = 0x1000,
+					},
 				},
 			},
 		},
-		.interrupt_limit = 256,
 		.root_cell = {
 			.name = "QEMU-VM",
 
@@ -112,45 +109,59 @@ struct {
 			.size = 0x1000000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
 		},
-		/* MemRegion: fe000000-fe7fffff : 0000:00:1f.7 (virtio-9p) */
+		/* MemRegion: fe000000-fe003fff : 0000:00:1f.7 (virtio-9p) */
 		{
 			.phys_start = 0xfe000000,
 			.virt_start = 0xfe000000,
-			.size = 0x800000,
-			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
-		},
-		/* MemRegion: feb80000-febbffff : 0000:00:02.0 (e1000) */
-		{
-			.phys_start = 0xfeb80000,
-			.virt_start = 0xfeb80000,
-			.size = 0x40000,
-			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
-		},
-		/* MemRegion: febc0000-febdffff : 0000:00:02.0 (e1000) */
-		{
-			.phys_start = 0xfebc0000,
-			.virt_start = 0xfebc0000,
-			.size = 0x20000,
-			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
-		},
-		/* MemRegion: febf0000-febf3fff : 0000:00:1b.0 (ICH HD audio) */
-		{
-			.phys_start = 0xfebf0000,
-			.virt_start = 0xfebf0000,
 			.size = 0x4000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
 		},
-		/* MemRegion: febf4000-febf4fff : 0000:00:01.0 (vesafd) */
+		/* MemRegion: feb40000-feb7ffff : 0000:00:02.0 */
 		{
-			.phys_start = 0xfebf4000,
-			.virt_start = 0xfebf4000,
+			.phys_start = 0xfeb40000,
+			.virt_start = 0xfeb40000,
+			.size = 0x40000,
+			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
+		},
+		/* MemRegion: feb80000-feb9ffff : e1000e */
+		{
+			.phys_start = 0xfeb80000,
+			.virt_start = 0xfeb80000,
+			.size = 0x20000,
+			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
+		},
+		/* MemRegion: feba0000-febbffff : e1000e */
+		{
+			.phys_start = 0xfeba0000,
+			.virt_start = 0xfeba0000,
+			.size = 0x20000,
+			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
+		},
+		/* MemRegion: febd1000-febd3fff : e1000e */
+		{
+			.phys_start = 0xfebd1000,
+			.virt_start = 0xfebd1000,
+			.size = 0x3000,
+			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
+		},
+		/* MemRegion: febd4000-febd7fff : 0000:00:1b.0 (ICH HD audio) */
+		{
+			.phys_start = 0xfebd4000,
+			.virt_start = 0xfebd4000,
+			.size = 0x4000,
+			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
+		},
+		/* MemRegion: febd8000-febd8fff : 0000:00:01.0 (vesafd) */
+		{
+			.phys_start = 0xfebd8000,
+			.virt_start = 0xfebd8000,
 			.size = 0x1000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
 		},
-		/* MemRegion: febf5000-febf5fff : 0000:00:1f.2 (ahci) */
+		/* MemRegion: febd9000-febd9fff : 0000:00:1f.2 (ahci) */
 		{
-			.phys_start = 0xfebf5000,
-			.virt_start = 0xfebf5000,
+			.phys_start = 0xfebd9000,
+			.virt_start = 0xfebd9000,
 			.size = 0x1000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
 		},
@@ -161,11 +172,18 @@ struct {
 			.size = 0x1000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
 		},
-		/* IVSHMEM shared memory region */
+		/* IVSHMEM shared memory region (networking) */
 		{
 			.phys_start = 0x3f100000,
 			.virt_start = 0x3f100000,
-			.size = 0x100000,
+			.size = 0xff000,
+			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
+		},
+		/* IVSHMEM shared memory region (demo) */
+		{
+			.phys_start = 0x3f1ff000,
+			.virt_start = 0x3f1ff000,
+			.size = 0x1000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
 		},
 	},
@@ -214,10 +232,21 @@ struct {
 			.domain = 0x0000,
 			.bdf = 0x0008,
 		},
-		{ /* e1000 */
+		{ /* e1000e */
 			.type = JAILHOUSE_PCI_TYPE_DEVICE,
 			.domain = 0x0000,
 			.bdf = 0x0010,
+			.bar_mask = {
+				0xfffe0000, 0xfffe0000, 0xffffffe0,
+				0xffffc000, 0x00000000, 0x00000000,
+			},
+			.caps_start = 5,
+			.num_caps = 6,
+			.num_msi_vectors = 1,
+			.msi_64bits = 1,
+			.num_msix_vectors = 5,
+			.msix_region_size = 0x1000,
+			.msix_address = 0xfebd0000,
 		},
 		{ /* ICH HD audio */
 			.type = JAILHOUSE_PCI_TYPE_DEVICE,
@@ -251,22 +280,39 @@ struct {
 			.type = JAILHOUSE_PCI_TYPE_DEVICE,
 			.domain = 0x0000,
 			.bdf = 0x00ff,
+			.bar_mask = {
+				0xffffffe0, 0xfffff000, 0x00000000,
+				0x00000000, 0xffffc000, 0xffffffff,
+			},
 			.caps_start = 4,
 			.num_caps = 1,
 			.num_msix_vectors = 2,
 			.msix_region_size = 0x1000,
-			.msix_address = 0xfebf6000,
+			.msix_address = 0xfebda000,
 		},
-		{
+		{ /* IVSHMEM (networking) */
 			.type = JAILHOUSE_PCI_TYPE_IVSHMEM,
-			.domain = 0x0,
-			.bdf = (0x0f<<3),
+			.domain = 0x0000,
+			.bdf = 0x0e << 3,
 			.bar_mask = {
 				0xffffff00, 0xffffffff, 0x00000000,
 				0x00000000, 0xffffffe0, 0xffffffff,
 			},
-			.shmem_region = 12,
 			.num_msix_vectors = 1,
+			.shmem_region = 14,
+			.shmem_protocol = JAILHOUSE_SHMEM_PROTO_VETH,
+		},
+		{ /* IVSHMEM (demo) */
+			.type = JAILHOUSE_PCI_TYPE_IVSHMEM,
+			.domain = 0x0000,
+			.bdf = 0x0f << 3,
+			.bar_mask = {
+				0xffffff00, 0xffffffff, 0x00000000,
+				0x00000000, 0xffffffe0, 0xffffffff,
+			},
+			.num_msix_vectors = 1,
+			.shmem_region = 15,
+			.shmem_protocol = JAILHOUSE_SHMEM_PROTO_UNDEFINED,
 		},
 	},
 
@@ -299,6 +345,42 @@ struct {
 			.start = 0x98,
 			.len = 12,
 			.flags = JAILHOUSE_PCICAPS_WRITE,
+		},
+		{ /* e1000e */
+			.id = 0x1,
+			.start = 0xc8,
+			.len = 8,
+			.flags = JAILHOUSE_PCICAPS_WRITE,
+		},
+		{
+			.id = 0x5,
+			.start = 0xd0,
+			.len = 14,
+			.flags = JAILHOUSE_PCICAPS_WRITE,
+		},
+		{
+			.id = 0x10,
+			.start = 0xe0,
+			.len = 20,
+			.flags = JAILHOUSE_PCICAPS_WRITE,
+		},
+		{
+			.id = 0x11,
+			.start = 0xa0,
+			.len = 12,
+			.flags = JAILHOUSE_PCICAPS_WRITE,
+		},
+		{
+			.id = 0x1 | JAILHOUSE_PCI_EXT_CAP,
+			.start = 0x100,
+			.len = 4,
+			.flags = 0,
+		},
+		{
+			.id = 0x3 | JAILHOUSE_PCI_EXT_CAP,
+			.start = 0x140,
+			.len = 4,
+			.flags = 0,
 		},
 	},
 };

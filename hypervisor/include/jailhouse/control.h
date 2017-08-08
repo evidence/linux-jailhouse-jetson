@@ -18,6 +18,9 @@
 #define SHUTDOWN_NONE			0
 #define SHUTDOWN_STARTED		1
 
+extern volatile unsigned long panic_in_progress;
+extern unsigned long panic_cpu;
+
 /**
  * @defgroup Control Control Subsystem
  *
@@ -126,6 +129,8 @@ void config_commit(struct cell *cell_added_removed);
 
 long hypercall(unsigned long code, unsigned long arg1, unsigned long arg2);
 
+void shutdown(void);
+
 void __attribute__((noreturn)) panic_stop(void);
 void panic_park(void);
 
@@ -134,8 +139,8 @@ void panic_park(void);
  * @param cpu_id	ID of the target CPU.
  *
  * Suspension means that the target CPU is no longer executing cell code or
- * arbitrary hypervisor code. It may actively wait in the hypervisor context,
- * so the suspension time should be kept short.
+ * arbitrary hypervisor code. It may actively busy-wait in the hypervisor
+ * context, so the suspension time should be kept short.
  *
  * The function waits for the target CPU to enter suspended state.
  *

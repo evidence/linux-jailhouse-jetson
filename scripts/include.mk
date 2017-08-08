@@ -19,21 +19,20 @@ endif
 
 MAKEFLAGS += --no-print-directory
 
-prefix      ?= /usr/local
-exec_prefix ?= $(prefix)
-sbindir     ?= $(exec_prefix)/sbin
-libexecdir  ?= $(exec_prefix)/libexec
-datarootdir ?= $(prefix)/share
-datadir     ?= $(datarootdir)
+prefix		?= /usr/local
+exec_prefix	?= $(prefix)
+sbindir		?= $(exec_prefix)/sbin
+libexecdir	?= $(exec_prefix)/libexec
+datarootdir	?= $(prefix)/share
+datadir		?= $(datarootdir)
+completionsdir	?= /usr/share/bash-completion/completions
 firmwaredir ?= /lib/firmware
 
 # all directories listed here will be created using a generic rule below
-INSTALL_DIRECTORIES := $(prefix)	\
-		       $(exec_prefix)	\
-		       $(sbindir)	\
-		       $(libexecdir)	\
-		       $(datarootdir)	\
-		       $(datadir)	\
+INSTALL_DIRECTORIES := $(sbindir)		\
+		       $(libexecdir)		\
+		       $(datadir)		\
+		       $(completionsdir)	\
 		       $(firmwaredir)
 
 INSTALL         ?= install
@@ -51,5 +50,11 @@ $(sort $(INSTALL_DIRECTORIES:%=$(DESTDIR)%) \
 
 ARCH ?= $(shell uname -m)
 ifeq ($(ARCH),x86_64)
-	ARCH = x86
+override ARCH = x86
+endif
+ifeq ($(ARCH),armv7l)
+override ARCH = arm
+endif
+ifeq ($(ARCH),aarch64)
+override ARCH = arm64
 endif

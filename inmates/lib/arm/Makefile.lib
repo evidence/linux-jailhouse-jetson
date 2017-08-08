@@ -12,11 +12,10 @@
 # the COPYING file in the top-level directory.
 #
 
--include $(obj)/../../../hypervisor/include/generated/config.mk
-
 KBUILD_AFLAGS := $(filter-out -include asm/unified.h,$(KBUILD_AFLAGS))
 
 KBUILD_CFLAGS				+= -I$(INMATES_LIB)/include
+KBUILD_CFLAGS				+= -I$(INMATES_LIB)/../arm-common/include
 KBUILD_AFLAGS				+= -I$(INMATES_LIB)/include
 
 define DECLARE_TARGETS =
@@ -26,14 +25,6 @@ define DECLARE_TARGETS =
  targets += $$(foreach t,$$(_TARGETS:.bin=-y),$$($$t)) \
             $$(_TARGETS:.bin=-linked.o) $$(_TARGETS)
 endef
-
-mach-$(CONFIG_MACH_VEXPRESS)		:= vexpress
-mach-$(CONFIG_MACH_SUN7I)		:= sun7i
-mach-$(CONFIG_MACH_TEGRA124)		:= tegra124
-
-MACHINE					:= mach-$(mach-y)
-KBUILD_CFLAGS				+= -I$(INMATES_LIB)/include/$(MACHINE)
-KBUILD_AFLAGS				+= -I$(INMATES_LIB)/include/$(MACHINE)
 
 # prevent deleting intermediate files which would cause rebuilds
 .SECONDARY: $(addprefix $(obj)/,$(targets))

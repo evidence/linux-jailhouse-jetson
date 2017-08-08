@@ -10,6 +10,8 @@
 # the COPYING file in the top-level directory.
 #
 
+subdir-y := dts
+
 LINUXINCLUDE := -I$(src)/../hypervisor/arch/$(SRCARCH)/include \
 		-I$(src)/../hypervisor/include
 KBUILD_CFLAGS := -Wextra
@@ -19,6 +21,8 @@ KBUILD_CFLAGS += -include $(obj)/../hypervisor/include/jailhouse/config.h
 endif
 
 OBJCOPYFLAGS := -O binary
+
+GCOV_PROFILE := n
 
 CONFIGS = $(shell cd $(src); ls *.c)
 

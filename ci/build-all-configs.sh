@@ -13,7 +13,7 @@
 
 set -e
 
-CONFIGS="x86 banana-pi vexpress"
+CONFIGS="x86 banana-pi vexpress amd-seattle"
 
 # only build a specific config if the branch selects it
 if [ ${TRAVIS_BRANCH#coverity_scan-} != ${TRAVIS_BRANCH} ]; then
@@ -37,6 +37,10 @@ for CONFIG in $CONFIGS; do
 		ARCH=x86_64
 		CROSS_COMPILE=
 		;;
+	amd-seattle)
+		ARCH=arm64
+		CROSS_COMPILE=aarch64-linux-gnu-
+		;;
 	*)
 		ARCH=arm
 		CROSS_COMPILE=arm-linux-gnueabihf-
@@ -44,7 +48,7 @@ for CONFIG in $CONFIGS; do
 	esac
 
 	$PREFIX make KDIR=ci/linux/build-$CONFIG ARCH=$ARCH \
-	     CROSS_COMPILE=$CROSS_COMPILE
+	     CROSS_COMPILE=$CROSS_COMPILE -j $((2*`nproc`))
 
 	# Keep the clean run out of sight for cov-build so that results are
 	# accumulated as far as possible. Multiple compilations of the same

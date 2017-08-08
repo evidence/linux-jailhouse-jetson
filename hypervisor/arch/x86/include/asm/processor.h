@@ -32,6 +32,9 @@
 #define X86_FEATURE_INVPCID				(1 << 10)
 #define X86_FEATURE_CAT					(1 << 15)
 
+/* leaf 0x0d, subleaf 1, EAX */
+#define X86_FEATURE_XSAVES				(1 << 3)
+
 /* leaf 0x80000001, ECX */
 #define X86_FEATURE_SVM					(1 << 2)
 
@@ -136,6 +139,9 @@
 
 #define X86_REX_CODE					4
 
+#define X86_OP_MOVZX_OPC1				0x0f
+#define X86_OP_MOVZX_OPC2				0xb6
+#define X86_OP_MOVB_TO_MEM				0x88
 #define X86_OP_MOV_TO_MEM				0x89
 #define X86_OP_MOV_FROM_MEM				0x8b
 

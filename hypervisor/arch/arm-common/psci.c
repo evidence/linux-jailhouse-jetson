@@ -20,12 +20,13 @@
 static long psci_emulate_cpu_on(struct per_cpu *cpu_data,
 				struct trap_context *ctx)
 {
+	unsigned long mask = IS_PSCI_64(ctx->regs[0]) ? (u64)-1L : (u32)-1;
 	struct per_cpu *target_data;
 	bool kick_cpu = false;
 	unsigned int cpu;
 	long result;
 
-	cpu = arm_cpu_by_mpidr(cpu_data->cell, ctx->regs[1]);
+	cpu = arm_cpu_by_mpidr(cpu_data->cell, ctx->regs[1] & mask);
 	if (cpu == -1)
 		/* Virtual id not in set */
 		return PSCI_DENIED;
@@ -35,8 +36,8 @@ static long psci_emulate_cpu_on(struct per_cpu *cpu_data,
 	spin_lock(&target_data->control_lock);
 
 	if (target_data->wait_for_poweron) {
-		target_data->cpu_on_entry = ctx->regs[2];
-		target_data->cpu_on_context = ctx->regs[3];
+		target_data->cpu_on_entry = ctx->regs[2] & mask;
+		target_data->cpu_on_context = ctx->regs[3] & mask;
 		target_data->reset = true;
 		kick_cpu = true;
 
@@ -78,16 +79,26 @@ long psci_dispatch(struct trap_context *ctx)
 		/* Major[31:16], minor[15:0] */
 		return 2;
 
+	case PSCI_CPU_SUSPEND_32:
+	case PSCI_CPU_SUSPEND_64:
+		if (!irqchip_has_pending_irqs()) {
+			asm volatile("wfi" : : : "memory");
+			irqchip_handle_irq(cpu_data);
+		}
+		return 0;
+
 	case PSCI_CPU_OFF:
 	case PSCI_CPU_OFF_V0_1_UBOOT:
 		arm_cpu_park();
 		return 0;
 
 	case PSCI_CPU_ON_32:
+	case PSCI_CPU_ON_64:
 	case PSCI_CPU_ON_V0_1_UBOOT:
 		return psci_emulate_cpu_on(cpu_data, ctx);
 
 	case PSCI_AFFINITY_INFO_32:
+	case PSCI_AFFINITY_INFO_64:
 		return psci_emulate_affinity_info(cpu_data, ctx);
 
 	default:

@@ -1,7 +1,7 @@
 /*
  * Jailhouse, a Linux-based partitioning hypervisor
  *
- * Copyright (c) Siemens AG, 2014
+ * Copyright (c) Siemens AG, 2014-2017
  *
  * Authors:
  *  Ivan Kolchin <ivan.kolchin@siemens.com>
@@ -242,11 +242,18 @@ static union x86_msi_vector pci_get_x86_msi_vector(struct pci_device *device)
  * @return an IRQ messages data structure
  */
 struct apic_irq_message
-pci_translate_msi_vector(struct pci_device *device, unsigned int vector,
-			 unsigned int legacy_vectors, union x86_msi_vector msi)
+x86_pci_translate_msi(struct pci_device *device, unsigned int vector,
+		      unsigned int legacy_vectors, union x86_msi_vector msi)
 {
 	struct apic_irq_message irq_msg = { .valid = 0 };
 	unsigned int idx;
+
+	/*
+	 * Ignore invalid target addresses, e.g. if the cell programmed the
+	 * register to all-zero.
+	 */
+	if (msi.native.address != MSI_ADDRESS_VALUE)
+		return irq_msg;
 
 	if (iommu_cell_emulates_ir(device->cell)) {
 		if (!msi.remap.remapped)
@@ -304,13 +311,13 @@ void arch_pci_suppress_msi(struct pci_device *device,
 	 */
 	msi = pci_get_x86_msi_vector(device);
 	for (n = 0; n < vectors; n++) {
-		irq_msg = pci_translate_msi_vector(device, n, vectors, msi);
+		irq_msg = x86_pci_translate_msi(device, n, vectors, msi);
 		if (irq_msg.valid)
 			apic_send_irq(irq_msg);
 	}
 }
 
-static u32 pci_get_x86_msi_remap_address(unsigned int index)
+static u64 pci_get_x86_msi_remap_address(unsigned int index)
 {
 	union x86_msi_vector msi = {
 		.remap.int_index15 = index >> 15,
@@ -320,7 +327,7 @@ static u32 pci_get_x86_msi_remap_address(unsigned int index)
 		.remap.address = MSI_ADDRESS_VALUE,
 	};
 
-	return (u32)msi.raw.address;
+	return msi.raw.address;
 }
 
 int arch_pci_update_msi(struct pci_device *device,
@@ -337,7 +344,7 @@ int arch_pci_update_msi(struct pci_device *device,
 		return 0;
 
 	for (n = 0; n < vectors; n++) {
-		irq_msg = pci_translate_msi_vector(device, n, vectors, msi);
+		irq_msg = x86_pci_translate_msi(device, n, vectors, msi);
 		result = iommu_map_interrupt(device->cell, bdf, n, irq_msg);
 		// HACK for QEMU
 		if (result == -ENOSYS) {
@@ -358,7 +365,7 @@ int arch_pci_update_msi(struct pci_device *device,
 	if (info->msi_64bits)
 		pci_write_config(bdf, cap->start + 8, 0, 4);
 	pci_write_config(bdf, cap->start + 4,
-			 pci_get_x86_msi_remap_address(result), 4);
+			 (u32)pci_get_x86_msi_remap_address(result), 4);
 
 	return 0;
 }
@@ -376,7 +383,7 @@ int arch_pci_update_msix_vector(struct pci_device *device, unsigned int index)
 	    device->msix_vectors[index].masked)
 		return 0;
 
-	irq_msg = pci_translate_msi_vector(device, index, 0, msi);
+	irq_msg = x86_pci_translate_msi(device, index, 0, msi);
 	result = iommu_map_interrupt(device->cell, device->info->bdf, index,
 				     irq_msg);
 	// HACK for QEMU

@@ -60,10 +60,11 @@ static void __attribute__((noreturn)) help(char *prog, int exit_status)
 {
 	const struct extension *ext;
 
-	printf("Usage: %s { COMMAND | --help || --version }\n"
+	printf("Usage: %s { COMMAND | --help | --version }\n"
 	       "\nAvailable commands:\n"
 	       "   enable SYSCONFIG\n"
 	       "   disable\n"
+	       "   console [-f | --follow]\n"
 	       "   cell create CELLCONFIG\n"
 	       "   cell list\n"
 	       "   cell load { ID | [--name] NAME } "
@@ -182,15 +183,21 @@ static char *read_sysfs_cell_string(const unsigned int id, const char *entry)
 
 	/* entries in /sys/devices/jailhouse/cells must not be empty */
 	if (size == 0) {
-		snprintf(buffer, sizeof(buffer), "reading " JAILHOUSE_CELLS "%u/%s",
-			 id, entry);
+		snprintf(buffer, sizeof(buffer),
+			 "reading " JAILHOUSE_CELLS "%u/%s", id, entry);
 		perror(buffer);
 		exit(1);
 	}
 
-	/* chop trailing linefeeds and enforce the string to be null-terminated */
-	if (ret[size-1] != '\n')
+	/* chop trailing linefeeds and enforce the string to be
+	 * null-terminated */
+	if (ret[size-1] != '\n') {
 		ret = realloc(ret, ++size);
+		if (ret == NULL) {
+			fprintf(stderr, "insufficient memory\n");
+			exit(1);
+		}
+	}
 	ret[size-1] = 0;
 
 	return ret;
@@ -504,6 +511,45 @@ static int cell_management(int argc, char *argv[])
 	return err;
 }
 
+static int console(int argc, char *argv[])
+{
+	bool non_block = true;
+	char buffer[128];
+	ssize_t ret;
+	int fd;
+
+	if (argc == 3) {
+		if (match_opt(argv[2], "-f", "--follow"))
+			non_block = false;
+		else
+			help(argv[0], 1);
+	}
+
+	fd = open_dev();
+
+	if (non_block) {
+		ret = fcntl(fd, F_SETFL, O_NONBLOCK);
+		if (ret < 0) {
+			perror("fcntl(set O_NONBLOCK)");
+			goto out;
+		}
+	}
+
+	do {
+		ret = read(fd, buffer, sizeof(buffer));
+		if (ret < 0) {
+			perror("read(console)");
+			break;
+		}
+		ret = write(STDOUT_FILENO, buffer, ret);
+	} while (ret > 0);
+
+out:
+	close(fd);
+
+	return ret;
+}
+
 int main(int argc, char *argv[])
 {
 	int fd;
@@ -522,6 +568,8 @@ int main(int argc, char *argv[])
 		close(fd);
 	} else if (strcmp(argv[1], "cell") == 0) {
 		err = cell_management(argc, argv);
+	} else if (strcmp(argv[1], "console") == 0) {
+		err = console(argc, argv);
 	} else if (strcmp(argv[1], "config") == 0 ||
 		   strcmp(argv[1], "hardware") == 0) {
 		call_extension_script(argv[1], argc, argv);

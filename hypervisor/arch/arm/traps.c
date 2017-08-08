@@ -237,7 +237,7 @@ static void dump_guest_regs(struct trap_context *ctx)
 	panic_printk("pc=0x%08x cpsr=0x%08x hsr=0x%08x\n", pc, cpsr, ctx->hsr);
 	for (reg = 0; reg < 15; reg++) {
 		access_cell_reg(ctx, reg, &reg_val, true);
-		panic_printk("r%d=0x%08x ", reg, reg_val);
+		panic_printk("r%d=0x%08lx ", reg, reg_val);
 		if ((reg + 1) % 4 == 0)
 			panic_printk("\n");
 	}
@@ -396,12 +396,25 @@ static int arch_handle_cp15_64(struct trap_context *ctx)
 	return TRAP_HANDLED;
 }
 
-static const trap_handler trap_handlers[38] =
+static int handle_iabt(struct trap_context *ctx)
+{
+	unsigned long hpfar, hdfar;
+
+	arm_read_sysreg(HPFAR, hpfar);
+	arm_read_sysreg(HDFAR, hdfar);
+
+	panic_printk("FATAL: instruction abort at 0x%lx\n",
+		     (hpfar << 8) | (hdfar & 0xfff));
+	return TRAP_FORBIDDEN;
+}
+
+static const trap_handler trap_handlers[0x40] =
 {
 	[HSR_EC_CP15_32]	= arch_handle_cp15_32,
 	[HSR_EC_CP15_64]	= arch_handle_cp15_64,
 	[HSR_EC_HVC]		= arch_handle_hvc,
 	[HSR_EC_SMC]		= arch_handle_smc,
+	[HSR_EC_IABT]		= handle_iabt,
 	[HSR_EC_DABT]		= arch_handle_dabt,
 };
 

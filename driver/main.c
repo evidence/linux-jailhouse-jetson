@@ -1,7 +1,7 @@
 /*
  * Jailhouse, a Linux-based partitioning hypervisor
  *
- * Copyright (c) Siemens AG, 2013-2016
+ * Copyright (c) Siemens AG, 2013-2017
  * Copyright (c) Valentine Sinitsyn, 2014
  *
  * Authors:
@@ -12,6 +12,9 @@
  * the COPYING file in the top-level directory.
  */
 
+/* For compatibility with older kernel versions */
+#include <linux/version.h>
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/device.h>
@@ -19,11 +22,16 @@
 #include <linux/miscdevice.h>
 #include <linux/firmware.h>
 #include <linux/mm.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
+#include <linux/sched/signal.h>
+#endif
+#include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/uaccess.h>
 #include <linux/reboot.h>
 #include <linux/vmalloc.h>
 #include <linux/io.h>
+#include <asm/barrier.h>
 #include <asm/smp.h>
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
@@ -49,9 +57,6 @@
 # warning JAILHOUSE_CELL_ID_NAMELEN and JAILHOUSE_CELL_NAME_MAXLEN out of sync!
 #endif
 
-/* For compatibility with older kernel versions */
-#include <linux/version.h>
-
 #ifdef CONFIG_X86
 #define JAILHOUSE_AMD_FW_NAME	"jailhouse-amd.bin"
 #define JAILHOUSE_INTEL_FW_NAME	"jailhouse-intel.bin"
@@ -69,14 +74,39 @@ MODULE_FIRMWARE(JAILHOUSE_FW_NAME);
 #endif
 MODULE_VERSION(JAILHOUSE_VERSION);
 
+struct console_state {
+	unsigned int head;
+	unsigned int last_console_id;
+};
+
 DEFINE_MUTEX(jailhouse_lock);
 bool jailhouse_enabled;
+void *hypervisor_mem;
 
 static struct device *jailhouse_dev;
-static void *hypervisor_mem;
 static unsigned long hv_core_and_percpu_size;
 static atomic_t call_done;
 static int error_code;
+static struct jailhouse_console* volatile console_page;
+static bool console_available;
+
+/* last_console contains three members:
+ *   - valid: indicates if content in the page member is present
+ *   - id:    hint for the consumer if it already consumed the content
+ *   - page:  actual content
+ *
+ * Those members are updated in following cases:
+ *   - on disabling the hypervisor to print last messages
+ *   - on failures when enabling the hypervisor
+ *
+ * We need this structure, as in those cases the hypervisor memory gets
+ * unmapped.
+ */
+static struct {
+	bool valid;
+	unsigned int id;
+	struct jailhouse_console page;
+} last_console;
 
 #ifdef CONFIG_X86
 bool jailhouse_use_vmcall;
@@ -90,6 +120,33 @@ static void init_hypercall(void)
 {
 }
 #endif
+
+static void copy_console_page(struct jailhouse_console *dst)
+{
+	unsigned int tail;
+
+	do {
+		/* spin while hypervisor is writing to console */
+		while (console_page->busy)
+			cpu_relax();
+		tail = console_page->tail;
+		rmb();
+
+		/* copy console page */
+		memcpy(dst, console_page, sizeof(struct jailhouse_console));
+		rmb();
+	} while (console_page->tail != tail || console_page->busy);
+}
+
+static inline void update_last_console(void)
+{
+	if (!console_available)
+		return;
+
+	copy_console_page(&last_console.page);
+	last_console.id++;
+	last_console.valid = true;
+}
 
 static long get_max_cpus(u32 cpu_set_size,
 			 const struct jailhouse_system __user *system_config)
@@ -138,6 +195,11 @@ void *jailhouse_ioremap(phys_addr_t phys, unsigned long virt,
 	return vma->addr;
 }
 
+/*
+ * Called for each cpu by the JAILHOUSE_ENABLE ioctl.
+ * It jumps to the entry point set in the header, reports the result and
+ * signals completion to the main thread that invoked it.
+ */
 static void enter_hypervisor(void *info)
 {
 	struct jailhouse_header *header = info;
@@ -164,7 +226,7 @@ static void enter_hypervisor(void *info)
 	atomic_inc(&call_done);
 }
 
-static inline const char * jailhouse_fw_name(void)
+static inline const char * jailhouse_get_fw_name(void)
 {
 #ifdef CONFIG_X86
 	if (boot_cpu_has(X86_FEATURE_SVM))
@@ -177,6 +239,81 @@ static inline const char * jailhouse_fw_name(void)
 #endif
 }
 
+static int __jailhouse_console_dump_delta(struct jailhouse_console *console,
+					  char *dst, unsigned int head,
+					  unsigned int *miss)
+{
+	int ret;
+	unsigned int head_mod, tail_mod;
+	unsigned int delta, missed = 0;
+
+	/* we might underflow here intentionally */
+	delta = console->tail - head;
+
+	/* check if we have misses */
+	if (delta > sizeof(console->content)) {
+		missed = delta - sizeof(console->content);
+		head = console->tail - sizeof(console->content);
+		delta = sizeof(console->content);
+	}
+
+	head_mod = head % sizeof(console->content);
+	tail_mod = console->tail % sizeof(console->content);
+
+	if (head_mod + delta > sizeof(console->content)) {
+		ret = sizeof(console->content) - head_mod;
+		memcpy(dst, console->content + head_mod, ret);
+		delta -= ret;
+		memcpy(dst + ret, console->content, delta);
+		ret += delta;
+	} else {
+		ret = delta;
+		memcpy(dst, console->content + head_mod, delta);
+	}
+
+	if (miss)
+		*miss = missed;
+
+	return ret;
+}
+
+static void jailhouse_firmware_free(void)
+{
+	jailhouse_sysfs_core_exit(jailhouse_dev);
+	vunmap(hypervisor_mem);
+	hypervisor_mem = NULL;
+}
+
+int jailhouse_console_dump_delta(char *dst, unsigned int head,
+				 unsigned int *miss)
+{
+	int ret;
+	struct jailhouse_console *console;
+
+	if (!jailhouse_enabled)
+		return -EAGAIN;
+
+	if (!console_available)
+		return -EPERM;
+
+	console = kmalloc(sizeof(struct jailhouse_console), GFP_KERNEL);
+	if (console == NULL)
+		return -ENOMEM;
+
+	copy_console_page(console);
+	if (console->tail == head) {
+		ret = 0;
+		goto console_free_out;
+	}
+
+	ret = __jailhouse_console_dump_delta(console, dst, head, miss);
+
+console_free_out:
+	kfree(console);
+	return ret;
+}
+
+/* See Documentation/bootstrap-interface.txt */
 static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 {
 	const struct firmware *hypervisor;
@@ -185,20 +322,13 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 	struct jailhouse_memory *hv_mem = &config_header.hypervisor_memory;
 	struct jailhouse_header *header;
 	unsigned long remap_addr = 0;
-	void __iomem *console = NULL;
+	void __iomem *console = NULL, *clock_reg = NULL;
 	unsigned long config_size;
 	const char *fw_name;
 	long max_cpus;
 	int err;
 
-#ifdef CONFIG_ARM
-	if (!is_hyp_mode_available()) {
-		pr_err("jailhouse: HYP mode not available\n");
-		return -ENODEV;
-	}
-#endif
-
-	fw_name = jailhouse_fw_name();
+	fw_name = jailhouse_get_fw_name();
 	if (!fw_name) {
 		pr_err("jailhouse: Missing or unsupported HVM technology\n");
 		return -ENODEV;
@@ -210,6 +340,10 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 	if (memcmp(config_header.signature, JAILHOUSE_SYSTEM_SIGNATURE,
 		   sizeof(config_header.signature)) != 0) {
 		pr_err("jailhouse: Not a system configuration\n");
+		return -EINVAL;
+	}
+	if (config_header.revision != JAILHOUSE_CONFIG_REVISION) {
+		pr_err("jailhouse: Configuration revision mismatch\n");
 		return -EINVAL;
 	}
 
@@ -228,6 +362,15 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 	if (jailhouse_enabled || !try_module_get(THIS_MODULE))
 		goto error_unlock;
 
+#ifdef CONFIG_ARM
+	if (!is_hyp_mode_available()) {
+		pr_err("jailhouse: HYP mode not available\n");
+		err = -ENODEV;
+		goto error_put_module;
+	}
+#endif
+
+	/* Load hypervisor image */
 	err = request_firmware(&hypervisor, fw_name, jailhouse_dev);
 	if (err) {
 		pr_err("jailhouse: Missing hypervisor image %s\n", fw_name);
@@ -252,6 +395,10 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 #ifdef JAILHOUSE_BORROW_ROOT_PT
 	remap_addr = JAILHOUSE_BASE;
 #endif
+	/* Unmap hypervisor_mem from a previous "enable". The mapping has to be
+	 * redone since the root-cell config might have changed. */
+	jailhouse_firmware_free();
+	/* Map physical memory region reserved for Jailhouse. */
 	hypervisor_mem = jailhouse_ioremap(hv_mem->phys_start, remap_addr,
 					   hv_mem->size);
 	if (!hypervisor_mem) {
@@ -260,12 +407,22 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 		goto error_release_fw;
 	}
 
+	console_page = (struct jailhouse_console*)
+		(hypervisor_mem + header->console_page);
+	last_console.valid = false;
+
+	/* Copy hypervisor's binary image at beginning of the memory region
+	 * and clear the rest to zero. */
 	memcpy(hypervisor_mem, hypervisor->data, hypervisor->size);
 	memset(hypervisor_mem + hypervisor->size, 0,
 	       hv_mem->size - hypervisor->size);
 
 	header = (struct jailhouse_header *)hypervisor_mem;
 	header->max_cpus = max_cpus;
+
+	err = jailhouse_sysfs_core_init(jailhouse_dev, header->core_size);
+	if (err)
+		goto error_unmap;
 
 	/*
 	 * ARMv8 requires to clean D-cache and invalidate I-cache for memory
@@ -276,6 +433,8 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 	flush_icache_range((unsigned long)hypervisor_mem,
 			   (unsigned long)(hypervisor_mem + header->core_size));
 
+	/* Copy system configuration to its target address in hypervisor memory
+	 * region. */
 	config = (struct jailhouse_system *)
 		(hypervisor_mem + hv_core_and_percpu_size);
 	if (copy_from_user(config, arg, config_size)) {
@@ -283,25 +442,37 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 		goto error_unmap;
 	}
 
-	if (config->debug_console.flags & JAILHOUSE_MEM_IO) {
 #ifdef JAILHOUSE_BORROW_ROOT_PT
-		console = ioremap(config->debug_console.phys_start,
+	if (CON1_IS_MMIO(config->debug_console.flags)) {
+		console = ioremap(config->debug_console.address,
 				  config->debug_console.size);
 		if (!console) {
 			err = -EINVAL;
 			pr_err("jailhouse: Unable to map hypervisor debug "
 			       "console at %08lx\n",
-			       (unsigned long)config->debug_console.phys_start);
+			       (unsigned long)config->debug_console.address);
 			goto error_unmap;
 		}
 		/* The hypervisor has no notion of address spaces, so we need
 		 * to enforce conversion. */
 		header->debug_console_base = (void * __force)console;
-#else
-		header->debug_console_base =
-			(void * __force) config->debug_console.phys_start;
-#endif
 	}
+
+	if (config->debug_console.clock_reg) {
+		clock_reg = ioremap(config->debug_console.clock_reg, 1);
+		if (!clock_reg) {
+			err = -EINVAL;
+			pr_err("jailhouse: Unable to map hypervisor debug "
+			       "clock register at %08lx\n",
+			       (unsigned long)config->debug_console.clock_reg);
+			goto error_unmap;
+		}
+		header->debug_clock_reg = (void * __force)clock_reg;
+	}
+#endif
+
+	console_available = CON2_TYPE(config->debug_console.flags) ==
+				JAILHOUSE_CON2_TYPE_ROOTPAGE;
 
 	err = jailhouse_cell_prepare_root(&config->root_cell);
 	if (err)
@@ -327,10 +498,13 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 
 	if (console)
 		iounmap(console);
+	if (clock_reg)
+		iounmap(clock_reg);
 
 	release_firmware(hypervisor);
 
 	jailhouse_cell_register_root();
+	jailhouse_pci_virtual_root_devices_add(&config_header);
 
 	jailhouse_enabled = true;
 
@@ -341,12 +515,15 @@ static int jailhouse_cmd_enable(struct jailhouse_system __user *arg)
 	return 0;
 
 error_free_cell:
+	update_last_console();
 	jailhouse_cell_delete_root();
 
 error_unmap:
-	vunmap(hypervisor_mem);
+	jailhouse_firmware_free();
 	if (console)
 		iounmap(console);
+	if (clock_reg)
+		iounmap(clock_reg);
 
 error_release_fw:
 	release_firmware(hypervisor);
@@ -401,6 +578,8 @@ static int jailhouse_cmd_disable(void)
 	if (err)
 		goto unlock_out;
 
+	jailhouse_pci_virtual_root_devices_remove();
+
 	error_code = 0;
 
 	preempt_disable();
@@ -408,7 +587,7 @@ static int jailhouse_cmd_disable(void)
 	if (num_online_cpus() != cpumask_weight(&root_cell->cpus_assigned)) {
 		/*
 		 * Not all assigned CPUs are currently online. If we disable
-		 * now, we will loose the offlined ones.
+		 * now, we will lose the offlined ones.
 		 */
 
 		preempt_enable();
@@ -436,7 +615,7 @@ static int jailhouse_cmd_disable(void)
 	if (err)
 		goto unlock_out;
 
-	vunmap(hypervisor_mem);
+	update_last_console();
 
 	jailhouse_cell_delete_root();
 	jailhouse_enabled = false;
@@ -485,11 +664,116 @@ static long jailhouse_ioctl(struct file *file, unsigned int ioctl,
 	return err;
 }
 
+static int jailhouse_console_open(struct inode *inode, struct file *file)
+{
+	struct console_state *user;
+
+	user = kzalloc(sizeof(struct console_state), GFP_KERNEL);
+	if (!user)
+		return -ENOMEM;
+
+	file->private_data = user;
+
+	return 0;
+}
+
+static int jailhouse_console_release(struct inode *inode, struct file *file)
+{
+	struct console_state *user = file->private_data;
+
+	kfree(user);
+
+	return 0;
+}
+
+static ssize_t jailhouse_console_read(struct file *file, char __user *out,
+				      size_t size, loff_t *off)
+{
+	struct console_state *user = file->private_data;
+	char *content;
+	unsigned int miss;
+	int ret;
+
+	content = kmalloc(sizeof(console_page->content), GFP_KERNEL);
+	if (content == NULL)
+		return -ENOMEM;
+
+	/* wait for new data */
+	while (1) {
+		if (mutex_lock_interruptible(&jailhouse_lock) != 0) {
+			ret = -EINTR;
+			goto console_free_out;
+		}
+
+		if (last_console.id != user->last_console_id &&
+		    last_console.valid) {
+			ret = __jailhouse_console_dump_delta(&last_console.page,
+							     content,
+							     user->head,
+							     &miss);
+			if (!ret)
+				user->last_console_id =
+					last_console.id;
+		} else {
+			ret = jailhouse_console_dump_delta(content, user->head,
+							   &miss);
+		}
+
+		mutex_unlock(&jailhouse_lock);
+
+		if ((!ret || ret == -EAGAIN) && file->f_flags & O_NONBLOCK)
+			goto console_free_out;
+
+		if (ret == -EAGAIN)
+			/* Reset the user head, if jailhouse is not enabled. We
+			 * have to do this, as jailhouse might be reenabled and
+			 * the file handle was kept open in the meanwhile */
+			user->head = 0;
+		else if (ret < 0)
+			goto console_free_out;
+		else if (ret)
+			break;
+
+		schedule_timeout_uninterruptible(HZ / 10);
+		if (signal_pending(current)) {
+			ret = -EINTR;
+			goto console_free_out;
+		}
+	}
+
+	if (miss) {
+		/* If we missed anything, warn user. We will dump the actual
+		 * content in the next call. */
+		ret = snprintf(content, sizeof(console_page->content),
+			       "<missed %u bytes of console log>\n",
+			       miss);
+		user->head += miss;
+		if (size < ret)
+			ret = size;
+	} else {
+		if (size < ret)
+			ret = size;
+		user->head += ret;
+	}
+
+	if (copy_to_user(out, content, ret))
+		ret = -EFAULT;
+
+console_free_out:
+	set_current_state(TASK_RUNNING);
+	kfree(content);
+	return ret;
+}
+
+
 static const struct file_operations jailhouse_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = jailhouse_ioctl,
 	.compat_ioctl = jailhouse_ioctl,
 	.llseek = noop_llseek,
+	.open = jailhouse_console_open,
+	.release = jailhouse_console_release,
+	.read = jailhouse_console_read,
 };
 
 static struct miscdevice jailhouse_misc_dev = {
@@ -555,6 +839,7 @@ static void __exit jailhouse_exit(void)
 	unregister_reboot_notifier(&jailhouse_shutdown_nb);
 	misc_deregister(&jailhouse_misc_dev);
 	jailhouse_sysfs_exit(jailhouse_dev);
+	jailhouse_firmware_free();
 	jailhouse_pci_unregister();
 	root_device_unregister(jailhouse_dev);
 }
