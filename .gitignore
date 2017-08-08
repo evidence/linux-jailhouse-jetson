@@ -12,7 +12,6 @@
 Module.symvers
 modules.order
 driver/jailhouse.ko
-hypervisor/include/jailhouse/config.h
 hypervisor/hypervisor.lds
 tools/jailhouse
 tools/jailhouse-gcov-extract
