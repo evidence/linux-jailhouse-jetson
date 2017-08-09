@@ -30,13 +30,18 @@ adding ```mem=3968M vmalloc=512M``` (on TX1 this can be written inside the
 Since the demo writes its output directly to the serial port, you also need to
 make sure that the kernel command line does *not* have its console on the
 serial port. In particular, you have to remove the ```console=ttyS0,115200n8```
-parameter from the boot arguments (you can keep 
+parameter from the boot arguments (you can keep
 ```earlyprintk=uart8250-32bit,0x70006000 console=tty0``` which indeed are useful
 for interface initialization).
-Unfortunately, on the most recent versions of the Nvidia distribution this can
-be achieved only by recompiling U-Boot.
-Alternatively, you can overwrite U-Boot's ```cbootargs``` environment variable
-at boot (through the ```setenv``` command) and then type ```run bootcmd```.
+Since the ```cbootargs``` environment variable gets automatically overwritten
+at each boot, the best way to remove such option is to change the ```bootcmd``
+variable by typing
+
+    setenv bootcmd setenv cbootargs root=/dev/mmcblk0p1 rw rootwait OS=l4t fbcon=map:0 net.ifnames=0 tegraid=21.1.2.0.0 ddr_die=2048M@2048M ddr_die=2048M@4096M section=256M memtype=0 vpr_resize usb_port_owner_info=0 lane_owner_info=0 emc_max_dvfs=0 touch_id=0@63 video=tegrafb no_console_suspend=1 debug_uartport=lsport,0 maxcpus=4 usbcore.old_scheme_first=1 lp0_vec=0x1000@   0xff2bf000 nvdumper_reserved=0xff23f000 core_edp_mv=1075 core_edp_ma=4000 gpt earlyprintk=uart8250-32bit,0x70006000 console=tty0 \; run distro_bootcmd
+
+    saveenv
+
+    reset
 
 
 Usage
