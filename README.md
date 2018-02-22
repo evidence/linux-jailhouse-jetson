@@ -2,19 +2,31 @@ JAILHOUSE for NVIDIA Jetson TX1
 ===============================
 
 This is the Jailhouse hypervisor [1] for the default **4.4** Linux kernel [2]
-running on NVIDIA Jetson TX1 platform [3]. The porting activity has been done
-in the context of the HERCULES European project [4]. 
+provided by NVIDIA for the Jetson TX1 platform [3]. The porting activity has
+been done in the context of the HERCULES European project [4].
 
-Plase, refer to the original website [1] for further information about Jailhouse
+Please, refer to the original website [1] for further information about Jailhouse
 or other platforms/kernel versions.
+
+
+Kernel build & Installation
+---------------------------
+
+For installing Jailhouse, a copy of the compiled Linux kernel with all object
+files is needed, to be able of building the kernel module.
+Additionally, you need to configure the kernel using the configuration
+available in the ```kernel/config``` file.
+
+Note that NVIDIA provides its own Linux kernel (not Vanilla).
+The kernel sources are available at [6].
+
+Some scripts available in [5] allow to automatically download and build such
+kernel for the TX1 platform, also fixing a few issues that prevent a successful
+build.
 
 
 Build & Installation
 --------------------
-
-To build Jailhouse, a copy of the compiled Linux kernel with all object files
-is needed, to be able of building a kernel module.
-You can refer to the guide in [5] for compiling a kernel for the TX1 platform.
 
 To build and install jailhouse just type:
 
@@ -30,8 +42,8 @@ adding ```mem=3968M vmalloc=512M``` (on TX1 this can be written inside the
 Since the demo writes its output directly to the serial port, you also need to
 make sure that the kernel command line does *not* have its console on the
 serial port. In particular, you have to remove the ```console=ttyS0,115200n8```
-parameter from the boot arguments (you can keep
-```earlyprintk=uart8250-32bit,0x70006000 console=tty0``` which indeed are useful
+parameter from the boot arguments (keep
+```earlyprintk=uart8250-32bit,0x70006000 console=tty0``` as it is useful
 for interface initialization).
 Since the ```cbootargs``` environment variable gets automatically overwritten
 at each boot, the best way to remove such option is to change the ```bootcmd``
@@ -97,5 +109,6 @@ References
 * [3] NVIDIA Jetson TX1 platform: http://www.nvidia.com/object/jetson-tx1-dev-kit.html
 * [4] HERCULES EU project: http://hercules2020.eu
 * [5] Build TX1 Kernel and Modules: https://github.com/jetsonhacks/buildJetsonTX1Kernel
+* [6] NVIDIA Linux kernel sources: http://developer.download.nvidia.com/embedded/L4T/r28_Release_v1.0/BSP/source_release.tbz2
 
 
