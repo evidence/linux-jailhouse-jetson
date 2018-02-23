@@ -9,8 +9,8 @@ Please, refer to the original website [1] for further information about Jailhous
 or other platforms/kernel versions.
 
 
-Kernel build & Installation
----------------------------
+Linux kernel build & Installation
+---------------------------------
 
 For installing Jailhouse, a copy of the compiled Linux kernel with all object
 files is needed, to be able of building the kernel module.
@@ -25,8 +25,8 @@ kernel for the TX1 platform, also fixing a few issues that prevent a successful
 build.
 
 
-Build & Installation
---------------------
+Jailhouse build & Installation
+------------------------------
 
 To build and install jailhouse just type:
 
@@ -39,12 +39,30 @@ by the Linux kernel. You therefore need to modify the kernel boot arguments
 adding ```mem=3968M vmalloc=512M``` (on TX1 this can be written inside the
 ```/boot/extlinux/extlinux.conf``` file).
 
-Since the demo writes its output directly to the serial port, you also need to
-make sure that the kernel command line does *not* have its console on the
-serial port. In particular, you have to remove the ```console=ttyS0,115200n8```
-parameter from the boot arguments (keep
-```earlyprintk=uart8250-32bit,0x70006000 console=tty0``` as it is useful
-for interface initialization).
+
+Serial port assignment
+----------------------
+
+Usually, the serial port is assigned exclusively to the inmate, especially if
+it does not run a full-fledged operating system capable of using more complex
+hardware (e.g., a display). This is the case, for example, of the gic-demo
+illustrated below, which prints its output directly on the serial console.
+
+A FTDI USB cable can be used to physically connect the platform's serial
+console to a host machine. The following picture shows how pins must be
+connected on the platform side. More information about this connection is
+available at [7]. You can then install a serial terminal program on the host
+machine (e.g., Putty or minicom), set a 115200 baudrate and connect to the
+board.
+
+<p align="center">
+<img src="images/TX1_serial_cable.jpg" width="400">
+</p>
+
+Then, Linux must be prevented from starting a console on the serial
+port. This can be done by removing the ```console=ttyS0,115200n8``` parameter
+from the boot arguments (keep ```earlyprintk=uart8250-32bit,0x70006000
+console=tty0``` as it is useful for interface initialization).
 Since the ```cbootargs``` environment variable gets automatically overwritten
 at each boot, the best way to remove such option is to change the ```bootcmd``
 variable by typing
@@ -55,9 +73,20 @@ variable by typing
 
     reset
 
+After this change, Linux will not start the console on the serial port anymore.
+The console will still be reachable through HDMI. Alternatively, before
+disabling the serial port, you can assign a static IP to the platform by
+appending to ```/etc/network/interfaces``` the needed information:
 
-Usage
------
+	auto eth0
+	iface eth0 inet static
+	address ...
+	netmask ...
+	gateway ...
+
+
+Jailhouse usage
+---------------
 
 Once the boot arguments has been modified and the machine rebooted, to run the
 hypervisor type:
@@ -71,8 +100,8 @@ Performance can be improved by setting the performance CPU frequency governor:
 	sudo sh -c 'echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor'
 
 
-Demonstration
--------------
+Jailhouse demonstration
+-----------------------
 
 Next, you can create a cell with a demonstration application as follows:
 
@@ -110,5 +139,6 @@ References
 * [4] HERCULES EU project: http://hercules2020.eu
 * [5] Build TX1 Kernel and Modules: https://github.com/jetsonhacks/buildJetsonTX1Kernel
 * [6] NVIDIA Linux kernel sources: http://developer.download.nvidia.com/embedded/L4T/r28_Release_v1.0/BSP/source_release.tbz2
+* [7] Serial console http://www.jetsonhacks.com/2015/12/01/serial-console-nvidia-jetson-tx1/
 
 
