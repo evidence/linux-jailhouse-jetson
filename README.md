@@ -84,6 +84,9 @@ appending to ```/etc/network/interfaces``` the needed information:
 	netmask ...
 	gateway ...
 
+When setting the static IP address, you may also want to add the DNS server in
+```/etc/resolv.conf```.
+
 
 Jailhouse usage
 ---------------
@@ -130,6 +133,14 @@ Finally, the jailhouse hypervisor can be disabled by typing:
 
 	sudo jailhouse disable
 
+
+ERIKA3 RTOS
+-----------
+
+Please, refer to [8] for instructions about running the ERIKA3 RTOS on top of
+Jailhouse on the TX1 platform.
+
+
 References
 ----------
 
@@ -140,5 +151,6 @@ References
 * [5] Build TX1 Kernel and Modules: https://github.com/jetsonhacks/buildJetsonTX1Kernel
 * [6] NVIDIA Linux kernel sources: http://developer.download.nvidia.com/embedded/L4T/r28_Release_v1.0/BSP/source_release.tbz2
 * [7] Serial console http://www.jetsonhacks.com/2015/12/01/serial-console-nvidia-jetson-tx1/
+* [8] ERIKA3 RTOS on TX1: http://www.erika-enterprise.com/wiki/index.php?title=Nvidia_Jetson_TX1
 
 
