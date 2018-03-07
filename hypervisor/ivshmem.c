@@ -348,7 +348,21 @@ int ivshmem_init(struct cell *cell, struct pci_device *device)
 		if (peer_mem->phys_start != mem->phys_start ||
 		    peer_mem->size != mem->size ||
 		    peer_dev->info->shmem_protocol != dev_info->shmem_protocol)
+		{
+			if (peer_mem->phys_start != mem->phys_start)
+				printk("phys_start differ (%#llx!=%#llx)",
+				       peer_mem->phys_start, mem->phys_start);
+			if (peer_mem->size != mem->size)
+				printk("size differ (%#llx!=%#llx)",
+				       peer_mem->size, mem->size);
+			if (peer_dev->info->shmem_protocol !=
+			    dev_info->shmem_protocol)
+				printk("shmem_protocol differ (%d!=%d)",
+				       peer_dev->info->shmem_protocol,
+				       dev_info->shmem_protocol);
+
 			return trace_error(-EINVAL);
+		}
 
 		printk("Shared memory connection established: "
 		       "\"%s\" <--> \"%s\"\n",

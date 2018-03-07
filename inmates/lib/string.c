@@ -51,3 +51,15 @@ int strcmp(const char *s1, const char *s2)
 {
 	return strncmp(s1, s2, -1);
 }
+
+/** Function  taken from hypervisor/lib.c*/
+void *memcpy(void *dest, const void *src, unsigned long n)
+{
+        const u8 *s = src;
+        u8 *d = dest;
+
+        while (n-- > 0)
+                *d++ = *s++;
+        return dest;
+}
+

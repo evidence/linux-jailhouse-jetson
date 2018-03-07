@@ -20,3 +20,5 @@ ccflags-y := -ffunction-sections
 lib-y				:= $(COMMON_OBJECTS)
 lib-y				+= header.o
 lib-$(CONFIG_ARM_GIC_V3)	+= gic-v3.o
+lib-y				+= pci.o
+lib-y				+= ../pci.o
