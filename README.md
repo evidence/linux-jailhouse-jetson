@@ -24,20 +24,36 @@ Some scripts available in [5] allow to automatically download and build such
 kernel for the TX1 platform, also fixing a few issues that prevent a successful
 build.
 
-
-Jailhouse build & Installation
-------------------------------
-
-To build and install jailhouse just type:
-
-    sudo make KDIR=/path/to/compiled/kernel/ install
-
 The hypervisor requires a contiguous piece of RAM for itself and each
 additional cell. This currently has to be pre-allocated during boot-up.
 On ARM platforms this is usually achieved by reducing the amount of memory seen
 by the Linux kernel. You therefore need to modify the kernel boot arguments
 adding ```mem=3968M vmalloc=512M``` (on TX1 this can be written inside the
 ```/boot/extlinux/extlinux.conf``` file).
+
+
+Jailhouse build & Installation
+------------------------------
+
+Download the source code of Jailhouse through:
+
+    git clone https://github.com/evidence/linux-jailhouse-tx1.git
+
+Jailhouse can be either cross-compiled (i.e., on a host machine) or built
+natively (i.e. directly on the TX1 platform).
+
+Cross-compilation can be done by installing an aarch64 cross-compiler (```sudo
+apt install aarch64-linux-gnu-gcc``` on Ubuntu) and then typing:
+
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KDIR=/path/to/compiled/kernel/ DESTDIR=/path/for/binaries install
+
+You then have to transfer the content of the destination directory to the TX1
+platform (e.g., by zipping the content, transferring the archive, and unzipping
+the content on the target).
+
+The native compilation is easier, and just requires to type the following command on the TX1:
+
+    sudo make KDIR=/path/to/compiled/kernel/ install
 
 
 Serial port assignment
