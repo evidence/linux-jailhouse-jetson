@@ -43,7 +43,7 @@ Jailhouse can be either cross-compiled (i.e., on a host machine) or built
 natively (i.e. directly on the TX1 platform).
 
 Cross-compilation can be done by installing an aarch64 cross-compiler (```sudo
-apt install aarch64-linux-gnu-gcc``` on Ubuntu) and then typing:
+apt install gcc-aarch64-linux-gnu``` on Ubuntu 16.04) and then typing:
 
     make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KDIR=/path/to/compiled/kernel/ DESTDIR=/path/for/binaries install
 
