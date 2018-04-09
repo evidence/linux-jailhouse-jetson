@@ -29,10 +29,6 @@ always := $(CONFIGS:.c=.cell)
 
 targets += $(CONFIGS:.c=.o) $(CONFIGS:.c=.cell)
 
-DTS = $(shell cd $(src); ls $(SRCARCH)/dts/*.dts 2>/dev/null)
-always += $(DTS:.dts=.dtb)
-targets += $(DTS:.dts=.dtb)
-
 # prevent deleting intermediate files which would cause rebuilds
 .SECONDARY: $(addprefix $(obj)/,$(CONFIGS:.c=.o))
 
