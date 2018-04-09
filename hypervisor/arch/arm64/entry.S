@@ -98,15 +98,9 @@ arch_entry:
 	 */
 
 	/* install bootstrap_vectors */
-	ldr	x1, =bootstrap_vectors
-	virt2phys x1
+	ldr	x0, =bootstrap_vectors
+	virt2phys x0
 
-	/* choose opcode */
-	mov	x0, #LINUX_HVC_SET_VECTORS
-	cmp	x18, #HYP_STUB_ABI_LEGACY
-	b.ne	1f
-	mov	x0, #LINUX_HVC_SET_VECTORS_LEGACY
-1:
 	hvc	#0
 
 	hvc	#0	/* bootstrap vectors enter EL2 at el2_entry */
