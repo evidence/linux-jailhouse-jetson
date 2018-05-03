@@ -38,12 +38,19 @@
 
 #include <inmate.h>
 
+// Each PCI device has 4096B (1<<12) of configuration space.
+// The PCI device configuration area provided by Jailhouse is 1MiB (1<<20).
+// The maximum number of PCI device configurations is 1MiB/256B,
+// i.e. ((1 << 20) / (1 << 8)), which is (1 << (20 - 12))
+
+#define PCI_CFG_DEVS_MAX	(1 << 8)
+
 int pci_find_device(u16 vendor, u16 device, u16 start_bdf)
 {
 	unsigned int bdf;
 	u16 id;
 
-	for (bdf = start_bdf; bdf < 0x10000; bdf++) {
+	for (bdf = start_bdf; bdf < PCI_CFG_DEVS_MAX; bdf++) {
 		id = pci_read_config(bdf, PCI_CFG_VENDOR_ID, 2);
 		if (id == PCI_ID_ANY || (vendor != PCI_ID_ANY && vendor != id))
 			continue;
