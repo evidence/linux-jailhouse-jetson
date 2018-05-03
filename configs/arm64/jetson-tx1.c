@@ -8,6 +8,7 @@
  * Authors:
  *  Claudio Scordino <claudio@evidence.eu.com>
  *  Bruno Morelli <b.morelli@evidence.eu.com>
+ *  Luca Cuomo <l.cuomo@evidence.eu.com>
  *
  * This work is licensed under the terms of the GNU GPL, version 2.  See
  * the COPYING file in the top-level directory.
@@ -23,9 +24,9 @@
 struct {
 	struct jailhouse_system header;
 	__u64 cpus[1];
-	struct jailhouse_memory mem_regions[43];
-	struct jailhouse_irqchip irqchips[2];
-	struct jailhouse_pci_device pci_devices[1];
+	struct jailhouse_memory mem_regions[44];
+        struct jailhouse_irqchip irqchips[2];
+	struct jailhouse_pci_device pci_devices[2];
 } __attribute__((packed)) config = {
 	.header = {
 		.signature = JAILHOUSE_SYSTEM_SIGNATURE,
@@ -60,10 +61,13 @@ struct {
 			.name = "Jetson-TX1",
 			.cpu_set_size = sizeof(config.cpus),
 			.num_memory_regions = ARRAY_SIZE(config.mem_regions),
-			.num_irqchips = ARRAY_SIZE(config.irqchips),
 			.num_pci_devices = ARRAY_SIZE(config.pci_devices),
-
-			.vpci_irq_base = 148,
+			.num_irqchips = ARRAY_SIZE(config.irqchips),
+			/*On jetson TX1 IRQ from 212 to 223 are not assigned.
+			The root cell will use from 212 to 217. 
+			Note: Jailhouse	adds 32 (GIC's SPI) 
+			to the .vpci_irq_base , so 180 is the base value*/
+			.vpci_irq_base = 180,
 		},
 	},
 
@@ -368,12 +372,21 @@ struct {
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
 				JAILHOUSE_MEM_EXECUTE,
 		},
-		/* IVSHMEM shared memory region */ {
-			.phys_start = 0x17bf00000,
-			.virt_start = 0x17bf00000,
-			.size = 0x100000,
-			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
-		},
+		/* IVHSMEM  1*/ {
+                        .phys_start = 0x17ba00000,
+                        .virt_start = 0x17ba00000,
+                        .size = 0x100000,
+                        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE ,
+
+                },
+
+		/* IVHSMEM  2*/ {
+                        .phys_start = 0x17bd00000,
+                        .virt_start = 0x17bd00000,
+                        .size = 0x100000,
+                        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE ,
+                },
+
 	},
 	.irqchips = {
 		/* GIC */ {
@@ -387,21 +400,41 @@ struct {
 			.address = 0x50041000,
 			.pin_base = 160,
 			.pin_bitmap = {
-				0xffffffff, 0xffffffff
+				0xffffffff, 0xffffffff, 0xffffffff
+
 			},
 		},
 	},
 
 	.pci_devices = {
-		/* 00:00.0 */ {
-			.type = JAILHOUSE_PCI_TYPE_IVSHMEM,
-			.bdf = 0x00,
-			.bar_mask = {
-				0xffffff00, 0xffffffff, 0x00000000,
-				0x00000000, 0x00000000, 0x00000000,
-			},
+                {
+                        .type = JAILHOUSE_PCI_TYPE_IVSHMEM,
+                        .bdf = 0x0 << 3,
+                        .bar_mask = {
+                                0xffffff00, 0xffffffff, 0x00000000,
+                                0x00000000, 0x00000000, 0x00000000,
+                        },
+			
+			/*num_msix_vectors needs to be 0 for INTx operation*/
+                        .num_msix_vectors = 0, 
 			.shmem_region = 42,
-			.shmem_protocol = JAILHOUSE_SHMEM_PROTO_VETH,
-		},
-	},
+			.shmem_protocol = JAILHOUSE_SHMEM_PROTO_UNDEFINED,
+
+                },
+
+		{
+                        .type = JAILHOUSE_PCI_TYPE_IVSHMEM,
+                        .bdf = 0xf << 3,
+                        .bar_mask = {
+                                0xffffff00, 0xffffffff, 0x00000000,
+                                0x00000000, 0x00000000, 0x00000000,
+                        },
+
+                        /*num_msix_vectors needs to be 0 for INTx operation*/
+                        .num_msix_vectors = 0,
+                        .shmem_region = 43,
+                        .shmem_protocol = JAILHOUSE_SHMEM_PROTO_UNDEFINED,
+
+                },
+        },
 };
