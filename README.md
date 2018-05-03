@@ -149,7 +149,8 @@ hypervisor type:
 
 (use ```jetson-tx2.cell``` for TX2).
 
-Performance can be improved by setting the *performance* CPU frequency governor:
+Note that overall performance can be improved by setting the *performance* CPU
+frequency governor through the following command before enabling Jailhouse:
 
 	sudo sh -c 'echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor'
 
@@ -192,7 +193,8 @@ Finally, the jailhouse hypervisor can be disabled by typing:
 ERIKA3 RTOS
 -----------
 
-Please, refer to the ERIKA wiki ([here for TX1](http://www.erika-enterprise.com/wiki/index.php?title=Nvidia_Jetson_TX1) and [here for TX2](http://www.erika-enterprise.com/wiki/index.php?title=Nvidia_Jetson_TX2)) for instructions about running the ERIKA3 RTOS on top of Jailhouse on the Jetson platforms.
+Please, refer to the [ERIKA wiki page for Jetson](http://www.erika-enterprise.com/wiki/index.php?title=Nvidia_Jetson_TX1_and_TX2)
+for instructions about running the ERIKA3 RTOS on top of Jailhouse on the Jetson platforms.
 
 
 
