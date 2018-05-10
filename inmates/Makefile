@@ -12,6 +12,13 @@
 
 -include $(GEN_CONFIG_MK)
 
+ifneq ($(JAILHOUSE_INMATE_CC),)
+CC=$(JAILHOUSE_INMATE_CC)
+endif
+ifneq ($(JAILHOUSE_INMATE_LD),)
+LD=$(JAILHOUSE_INMATE_LD)
+endif
+
 INMATES_LIB = $(src)/lib/$(SRCARCH)
 export INMATES_LIB
 
