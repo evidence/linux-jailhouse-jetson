@@ -190,6 +190,28 @@ Finally, the jailhouse hypervisor can be disabled by typing:
 	sudo jailhouse disable
 
 
+Toolchain selection
+-------------------
+The aarch64 toolchain available in Ubuntu's repositories (i.e.
+```gcc-aarch64-linux-gnu```) is suitable for cross-compiling all the various
+components: the Linux kernel, Jailhouse's firmware, Jailhouse's kernel driver,
+the inmate library and the inmate containing ERIKA.
+However, it relies on a libc library meant to be used on top of the Linux OS.
+This toolchain, therefore, is not suitable to build the Jailhouse's inmate
+library for bare-metal inmates using the libc services (e.g.  ```memcpy()```).
+
+Unfortunately, the Jailhouse hypervisor does not (yet) allow to select
+different toolchains for compiling the inmate library and the rest of the
+system. This possibility has been added specifically in this version of
+Jailhouse.
+If you need the inmate library to be compiled using a specific toolchain (e.g.
+[Linaro's aarch64-elf toolchain](https://releases.linaro.org/components/toolchain/binaries/latest/aarch64-elf/)
+just set the ```JAILHOUSE_INMATE_CC``` and ```JAILHOUSE_INMATE_LD```
+environment variables to the binaries that must be used. Obviously, this
+toolchain must be used for building also the inmate that will be linked against
+the inmate library.
+
+
 ERIKA3 RTOS
 -----------
 
