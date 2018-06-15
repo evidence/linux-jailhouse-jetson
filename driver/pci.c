@@ -17,14 +17,6 @@
 #include <linux/of_fdt.h>
 #include <linux/vmalloc.h>
 #include <linux/version.h>
-#ifdef CONFIG_OF_OVERLAY
-#include <dt-bindings/interrupt-controller/arm-gic.h>
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,15,0)
-#define of_overlay_apply(overlay, id)	(*id = of_overlay_create(overlay))
-#define of_overlay_remove(id)		of_overlay_destroy(*id)
-#endif
 
 #include "pci.h"
 
@@ -101,8 +93,7 @@ static void jailhouse_pci_remove_device(const struct jailhouse_pci_device *dev)
 {
 	struct pci_dev *l_dev;
 
-	l_dev = pci_get_domain_bus_and_slot(dev->domain, PCI_BUS_NUM(dev->bdf),
-					    dev->bdf & 0xff);
+	l_dev = pci_get_bus_and_slot(PCI_BUS_NUM(dev->bdf), dev->bdf & 0xff);
 	if (l_dev)
 		pci_stop_and_remove_bus_device_locked(l_dev);
 }
@@ -243,38 +234,7 @@ void jailhouse_pci_cell_cleanup(struct cell *cell)
 #ifdef CONFIG_OF_OVERLAY
 extern u8 __dtb_vpci_template_begin[], __dtb_vpci_template_end[];
 
-static int overlay_id;
-static bool overlay_applied;
-static struct of_changeset overlay_changeset;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
-static struct device_node *overlay;
-#endif
-
-static void free_prop(struct property *prop)
-{
-	kfree(prop->name);
-	kfree(prop->value);
-	kfree(prop);
-}
-
-static struct property *alloc_prop(const char *name, int length)
-{
-	struct property *prop;
-
-	prop = kzalloc(sizeof(*prop), GFP_KERNEL);
-	if (!prop)
-		return NULL;
-
-	prop->name = kstrdup(name, GFP_KERNEL);
-	prop->length = length;
-	prop->value = kzalloc(length, GFP_KERNEL);
-	if (!prop->name || !prop->value) {
-		free_prop(prop);
-		return NULL;
-	}
-
-	return prop;
-}
+static int overlay_id = -1;
 
 static unsigned int count_ivshmem_devices(struct cell *cell)
 {
@@ -291,108 +251,74 @@ static const struct of_device_id gic_of_match[] = {
 	{ .compatible = "arm,cortex-a15-gic", },
 	{ .compatible = "arm,cortex-a7-gic", },
 	{ .compatible = "arm,gic-400", },
-	{ .compatible = "arm,gic-v3", },
 	{},
 };
 
 static bool create_vpci_of_overlay(struct jailhouse_system *config)
 {
-	struct device_node *vpci_node = NULL;
-	u32 gic_address_cells, gic_phandle;
-	struct device_node *gic;
-	struct property *prop;
-	unsigned int n, cell;
-	u64 base_addr;
+	const size_t size = __dtb_vpci_template_end - __dtb_vpci_template_begin;
+	struct device_node *overlay = NULL;
+	struct device_node *vpci = NULL;
+	struct device_node *gic = NULL;
+	void *overlay_data = NULL;
+	bool success = false;
+	phandle gic_handle;
 	u32 *prop_val;
+	u64 base_addr;
+	int len;
 
-	gic = of_find_matching_node(NULL, gic_of_match);
-	if (!gic)
-		return false;
+	overlay_data = kmemdup(__dtb_vpci_template_begin, size, GFP_KERNEL);
+	if (!overlay_data)
+		goto out;
 
-	if (of_property_read_u32(gic, "#address-cells", &gic_address_cells) < 0)
-		gic_address_cells = 0;
-	gic_phandle = gic->phandle;
-
-	of_node_put(gic);
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-	if (of_overlay_fdt_apply(__dtb_vpci_template_begin,
-			__dtb_vpci_template_end - __dtb_vpci_template_begin,
-			&overlay_id) < 0)
-		return false;
-
-#else /* < 4.17 */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
-	of_fdt_unflatten_tree((const void *)__dtb_vpci_template_begin, NULL,
-			      &overlay);
-#else /* < 4.7 */
-	of_fdt_unflatten_tree((const void *)__dtb_vpci_template_begin, &overlay);
-#endif /* < 4.7 */
+	of_fdt_unflatten_tree(overlay_data, NULL, &overlay);
+#else
+	of_fdt_unflatten_tree(overlay_data, &overlay);
+#endif
 	if (!overlay)
-		goto out_compat;
+		goto out;
 
 	of_node_set_flag(overlay, OF_DETACHED);
 
-	if (of_overlay_apply(overlay, &overlay_id) < 0)
-		goto out_compat;
-#endif /* < 4.17 */
-
-	of_changeset_init(&overlay_changeset);
-
-	vpci_node = of_find_node_by_path("/pci@0");
-	if (!vpci_node)
+	gic = of_find_matching_node(NULL, gic_of_match);
+	if (!gic)
 		goto out;
 
-	if (config->platform_info.pci_domain != (u16)-1) {
-		prop = alloc_prop("linux,pci-domain", sizeof(u32));
-		if (!prop)
-			goto out;
+	gic_handle = cpu_to_be32(gic->phandle);
 
-		prop_val = prop->value;
-		prop_val[0] = cpu_to_be32(config->platform_info.pci_domain);
-
-		if (of_changeset_add_property(&overlay_changeset, vpci_node,
-					      prop) < 0)
-			goto out;
-	}
-
-	prop = alloc_prop("interrupt-map",
-			  sizeof(u32) * (8 + gic_address_cells) * 4);
-	if (!prop)
+	vpci = of_find_node_by_name(overlay, "vpci");
+	if (!vpci)
 		goto out;
 
-	prop_val = prop->value;
-	for (n = 0, cell = 0; n < 4; n++) {
-		cell += 3;				/* match addr (0) */
-		prop_val[cell++] = cpu_to_be32(n + 1);	/* match addr */
-		prop_val[cell++] = cpu_to_be32(gic_phandle);
-		cell += gic_address_cells;		/* parent addr (0) */
-		prop_val[cell++] = cpu_to_be32(GIC_SPI);
-		prop_val[cell++] =
-			cpu_to_be32(config->root_cell.vpci_irq_base + n);
-		prop_val[cell++] = cpu_to_be32(IRQ_TYPE_EDGE_RISING);
-	}
-
-	if (of_changeset_add_property(&overlay_changeset, vpci_node, prop) < 0)
+	prop_val = (u32 *)of_get_property(vpci, "interrupt-map", &len);
+	if (!prop_val || len != 4 * 8 * sizeof(u32))
 		goto out;
 
-	prop = alloc_prop("reg", sizeof(u32) * 4);
-	if (!prop)
+	/*
+	 * Inject the GIC handles and the slot's SPI number in the interrupt
+	 * map. We can patch this tree as it's still local in our overlay_data.
+	 */
+	prop_val[4] = gic_handle;
+	prop_val[6] = cpu_to_be32(config->root_cell.vpci_irq_base);
+	prop_val[12] = gic_handle;
+	prop_val[14] = cpu_to_be32(config->root_cell.vpci_irq_base + 1);
+	prop_val[20] = gic_handle;
+	prop_val[22] = cpu_to_be32(config->root_cell.vpci_irq_base + 2);
+	prop_val[28] = gic_handle;
+	prop_val[30] = cpu_to_be32(config->root_cell.vpci_irq_base + 3);
+
+	prop_val = (u32 *)of_get_property(vpci, "reg", &len);
+	if (!prop_val || len != 4 * sizeof(u32))
 		goto out;
 
 	/* Set the MMCONFIG base address of the host controller. */
 	base_addr = config->platform_info.pci_mmconfig_base;
-	prop_val = prop->value;
 	prop_val[0] = cpu_to_be32(base_addr >> 32);
 	prop_val[1] = cpu_to_be32(base_addr);
-	prop_val[2] = 0;
-	prop_val[3] = cpu_to_be32(0x100000);
 
-	if (of_changeset_add_property(&overlay_changeset, vpci_node, prop) < 0)
-		goto out;
-
-	prop = alloc_prop("ranges", sizeof(u32) * 7);
-	if (!prop)
+	prop_val = (u32 *)of_get_property(vpci, "ranges", &len);
+	if (!prop_val || len != 7 * sizeof(u32))
 		goto out;
 
 	/*
@@ -400,62 +326,30 @@ static bool create_vpci_of_overlay(struct jailhouse_system *config)
 	 * covering one bus. Reserve 2 pages per virtual shared memory device.
 	 */
 	base_addr += 0x100000;
-	prop_val = prop->value;
-	prop_val[0] = cpu_to_be32(0x02000000);
 	prop_val[1] = cpu_to_be32(base_addr >> 32);
 	prop_val[2] = cpu_to_be32(base_addr);
 	prop_val[3] = cpu_to_be32(base_addr >> 32);
 	prop_val[4] = cpu_to_be32(base_addr);
-	prop_val[5] = 0;
 	prop_val[6] = cpu_to_be32(count_ivshmem_devices(root_cell) * 0x2000);
 
-	if (of_changeset_update_property(&overlay_changeset, vpci_node,
-					 prop) < 0)
+	overlay_id = of_overlay_create(overlay);
+	if (overlay_id < 0)
 		goto out;
 
-	prop = alloc_prop("status", 3);
-	if (!prop)
-		goto out;
-	strcpy(prop->value, "ok");
-
-	if (of_changeset_update_property(&overlay_changeset, vpci_node,
-					 prop) < 0 ||
-	    of_changeset_apply(&overlay_changeset) < 0)
-		goto out;
-
-	overlay_applied = true;
+	success = true;
 
 out:
-	of_node_put(vpci_node);
-	if (!overlay_applied) {
-		struct of_changeset_entry *ce;
+	of_node_put(vpci);
+	of_node_put(gic);
+	kfree(overlay_data);
 
-		list_for_each_entry(ce, &overlay_changeset.entries, node)
-			free_prop(ce->prop);
-		of_changeset_destroy(&overlay_changeset);
-		of_overlay_remove(&overlay_id);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
-out_compat:
-		kfree(overlay);
-		overlay = NULL;
-#endif
-	}
-
-	return overlay_applied;
+	return success;
 }
 
 static void destroy_vpci_of_overlay(void)
 {
-	if (overlay_applied) {
-		of_changeset_revert(&overlay_changeset);
-		of_changeset_destroy(&overlay_changeset);
-		of_overlay_remove(&overlay_id);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0)
-		kfree(overlay);
-		overlay = NULL;
-#endif
-		overlay_applied = false;
-	}
+	if (overlay_id >= 0)
+		of_overlay_destroy(overlay_id);
 }
 #else /* !CONFIG_OF_OVERLAY */
 static bool create_vpci_of_overlay(struct jailhouse_system *config)
