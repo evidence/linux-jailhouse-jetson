@@ -1,390 +1,223 @@
-JAILHOUSE
-=========
+JAILHOUSE for NVIDIA Jetson TX1 and TX2
+=======================================
 
-Introduction
-------------
+This is the [Jailhouse hypervisor](https://github.com/siemens/jailhouse)
+adapted to run on the **4.4**
+[Linux kernel provided by
+NVIDIA](https://developer.nvidia.com/embedded/linux-tegra) for the [Jetson TX1
+and TX2](https://www.nvidia.com/en-us/autonomous-machines/embedded-systems-dev-kits-modules/)
+platforms.
+The porting activity has been done in the context of the [HERCULES European project](http://hercules2020.eu).
 
-Jailhouse is a partitioning Hypervisor based on Linux. It is able to run
-bare-metal applications or (adapted) operating systems besides Linux. For this
-purpose, it configures CPU and device virtualization features of the hardware
-platform in a way that none of these domains, called "cells" here, can
-interfere with each other in an unacceptable way.
+Please, refer to the [original website](https://github.com/siemens/jailhouse)
+for further information about Jailhouse or other platforms/kernel versions.
 
-Jailhouse is optimized for simplicity rather than feature richness. Unlike
-full-featured Linux-based hypervisors like KVM or Xen, Jailhouse does not
-support overcommitment of resources like CPUs, RAM or devices. It performs no
-scheduling and only virtualizes those resources in software, that are essential
-for a platform and cannot be partitioned in hardware.
 
-Once Jailhouse is activated, it runs bare-metal, i.e. it takes full control
-over the hardware and needs no external support. However, in contrast to other
-bare-metal hypervisors, it is loaded and configured by a normal Linux system.
-Its management interface is based on Linux infrastructure. So you boot Linux
-first, then you enable Jailhouse and finally you split off parts of the
-system's resources and assign them to additional cells.
+Linux kernel build & Installation
+---------------------------------
 
-**WARNING**: This is work in progress! Don't expect things to be complete in any
-dimension. Use at your own risk. And keep the reset button in reach.
+For building Jailhouse (in particular, its kernel driver), a compiled copy of
+the Linux kernel with all object files is needed.
+Additionally, you need to configure the kernel using the configuration files
+available inside the ```kernel/``` directory.
 
+Note that NVIDIA provides its own vendor Linux kernel (not Vanilla).
+The kernel sources are available
+[here for TX1](http://developer.download.nvidia.com/embedded/L4T/r28_Release_v1.0/BSP/source_release.tbz2) and
+[here for TX2](http://developer.download.nvidia.com/embedded/L4T/r28_Release_v2.0/BSP/source_release.tbz2).
+Some scripts (available [here for TX1](https://github.com/jetsonhacks/buildJetsonTX1Kernel) and [here for TX2](https://github.com/jetsonhacks/buildJetsonTX2Kernel))
+allow to automatically download and build such kernel for the platforms,
+also fixing a few issues that prevent a successful build.
 
-Community Resources
--------------------
+The hypervisor requires a contiguous piece of RAM for itself and each
+additional cell. This currently has to be pre-allocated during boot-up.
+On ARM platforms this is usually achieved by reducing the amount of memory seen
+by the Linux kernel. You therefore need to modify the kernel boot arguments
+adding
+* ```mem=3968M vmalloc=512M``` on TX1
+* ```mem=7808M vmalloc=512M``` on TX2
 
-Project home:
+These values can be written inside the ```/boot/extlinux/extlinux.conf``` file.
 
- - https://github.com/siemens/jailhouse
 
-Source code:
+Jailhouse build & Installation
+------------------------------
 
- - https://github.com/siemens/jailhouse.git
- - git@github.com:siemens/jailhouse.git
+Download/clone the source code of Jailhouse through:
 
-Demo and testing images:
+    git clone https://github.com/evidence/linux-jailhouse-jetson.git
 
- - https://github.com/siemens/jailhouse-images
+Then, create the ```include/jailhouse/config.h``` file with the following content.
 
-Frequently Asked Questions (FAQ):
+For TX1:
 
- - See [FAQ file](FAQ.md)
+	#define CONFIG_TRACE_ERROR             1
+	#define CONFIG_ARM_GIC_V2              1
+	#define CONFIG_MACH_JETSON_TX1         1
 
-IRC channel:
-  - Freenode, irc.freenode.net, #jailhouse
-  - [![Webchat](https://img.shields.io/badge/irc-freenode-blue.svg "IRC Freenode")](https://webchat.freenode.net/?channels=jailhouse)
+For TX2:
 
-Mailing list:
+	#define CONFIG_TRACE_ERROR             1
+	#define CONFIG_ARM_GIC_V2              1
+	#define CONFIG_MACH_JETSON_TX2         1
 
-  - jailhouse-dev@googlegroups.com
+Jailhouse can be then either cross-compiled (i.e., on a host machine) or built
+natively (i.e. directly on the Jetson platform).
 
-  - Subscription:
-    - jailhouse-dev+subscribe@googlegroups.com
-    - https://groups.google.com/forum/#!forum/jailhouse-dev/join
+Cross-compilation can be done by installing an aarch64 cross-compiler (```sudo
+apt install gcc-aarch64-linux-gnu``` on Ubuntu 16.04) and then typing:
 
-  - Archives
-    - https://groups.google.com/forum/#!forum/jailhouse-dev
-    - http://news.gmane.org/gmane.linux.jailhouse
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KDIR=/path/to/compiled/kernel/ DESTDIR=/path/for/binaries install
 
-Continuous integration:
+You then have to transfer the content of the destination directory to the Jetson
+platform (e.g., by zipping the content, transferring the archive, and unzipping
+the content on the target).
 
-  - https://travis-ci.org/siemens/jailhouse
+The native compilation is easier, and just requires to type the following
+command on the Jetson platform:
 
-  - Status:
-    - ![](https://travis-ci.org/siemens/jailhouse.svg?branch=master) on master
-    - ![](https://travis-ci.org/siemens/jailhouse.svg?branch=next) on next
+    sudo make KDIR=/path/to/compiled/kernel/ install
 
-Static code analysis:
 
-  - https://scan.coverity.com/projects/4114
+Serial port assignment
+----------------------
 
-  - Status:
-    - ![](https://scan.coverity.com/projects/4114/badge.svg) on coverity_scan
+Usually, the serial port is assigned exclusively to the inmate, especially if
+it does not run a full-fledged operating system capable of using more complex
+hardware (e.g., a display). This is the case, for example, of the gic-demo
+illustrated below, which prints its output directly on the serial console.
 
-See the [contribution documentation](CONTRIBUTING.md) for details
-on how to write Jailhouse patches and propose them for upstream integration.
+A FTDI USB cable can be used to physically connect the platform's serial
+console to a host machine. The following picture shows how pins must be
+connected on the platform side. More information about this connection is
+[available here](http://www.jetsonhacks.com/2015/12/01/serial-console-nvidia-jetson-tx1/).
+You can then install a serial terminal program on the host machine (e.g., Putty
+or minicom), set a 115200 baudrate and connect to the board.
 
+<p align="center">
+<img src="images/TX_serial_cable.jpg" width="400">
+</p>
 
-Hardware requirements (preliminary)
------------------------------------
+Then, Linux must be prevented from starting a console on the serial
+port. This can be done by removing the ```console=ttyS0,115200n8``` parameter
+from the boot arguments (keep ```earlyprintk=uart8250-32bit,0x70006000
+console=tty0``` as it is useful for interface initialization).
+Since the ```cbootargs``` environment variable gets automatically overwritten
+at each boot, the best way to remove such option is to change the ```bootcmd```
+variable by typing the following commands on the U-Boot shell.
 
-#### x86 architecture:
+For TX1:
 
-  - Intel system:
+    setenv bootcmd setenv cbootargs root=/dev/mmcblk0p1 rw rootwait OS=l4t fbcon=map:0 net.ifnames=0 tegraid=21.1.2.0.0 ddr_die=2048M@2048M ddr_die=2048M@4096M section=256M memtype=0 vpr_resize usb_port_owner_info=0 lane_owner_info=0 emc_max_dvfs=0 touch_id=0@63 video=tegrafb no_console_suspend=1 debug_uartport=lsport,0 maxcpus=4 usbcore.old_scheme_first=1 lp0_vec=0x1000@   0xff2bf000 nvdumper_reserved=0xff23f000 core_edp_mv=1075 core_edp_ma=4000 gpt earlyprintk=uart8250-32bit,0x70006000 console=tty0 \; run distro_bootcmd
 
-    - support for 64-bit and VMX, more precisely
-      - EPT (extended page tables)
-      - unrestricted guest mode
-      - preemption timer
+    saveenv
 
-    - Intel IOMMU (VT-d) with interrupt remapping support
-      (except when running inside QEMU)
+    reset
 
-  - or AMD system:
 
-    - support for 64-bit and SVM (AMD-V), and also
-      - NPT (nested page tables); required
-      - Decode Assists; recommended
+For TX2:
 
-    - AMD IOMMU (AMD-Vi) is unsupported now but will be required in future
+    setenv bootcmd setenv cbootargs root=/dev/mmcblk0p1 rw rootwait console=tty0 OS=l4t fbcon=map:0 net.ifnames=0 memtype=0 video=tegrafb no_console_suspend=1 earlycon=uart8250,mmio32,0x03100000 nvdumper_reserved=0x2772e0000 gpt tegraid=18.1.2.0.0 tegra_keep_boot_clocks maxcpus=6 boot.slot_suffix= boot.ratchetvalues=0.2.1 androidboot.serialno=0324617129741 bl_prof_dataptr=0x10000@0x277040000 sdhci_tegra.en_boot_part_access=1 \; run distro_bootcmd
 
-  - At least 2 logical CPUs
+    saveenv
 
-#### ARM architecture:
+    reset
 
-  - ARMv7 with virtualization extensions or ARMv8
+After this change, Linux will not start the console on the serial port anymore.
+The console will still be reachable through HDMI. Alternatively, before
+disabling the serial port, you can assign a static IP to the platform by
+appending to ```/etc/network/interfaces``` the needed information:
 
-  - At least 2 logical CPUs
+	auto eth0
+	iface eth0 inet static
+	address ...
+	netmask ...
+	gateway ...
 
-  - Supported ARM boards:
+When setting the static IP address, you may also want to add the DNS server in
+```/etc/resolv.conf```.
 
-    - Banana Pi ([see more](Documentation/setup-on-banana-pi-arm-board.md))
 
-    - Orange Pi Zero (256 MB version)
+Jailhouse usage
+---------------
 
-    - NVIDIA Jetson TK1
+Once the boot arguments has been modified and the machine rebooted, to run the
+hypervisor type:
 
-    - ARM Versatile Express with Cortex-A15 or A7 cores
-      (includes ARM Fast Model)
+	sudo modprobe jailhouse
+	sudo jailhouse enable jailhouse/configs/arm64/jetson-tx1.cell
 
-    - emtrion emCON-RZ/G1x series based on Renesas RZ/G ([see more](Documentation/setup-on-emtrion-emcon-rz-boards.md))
+(use ```jetson-tx2.cell``` for TX2).
 
-  - Supported ARM64 boards:
+Note that overall performance can be improved by setting the *performance* CPU
+frequency governor through the following command before enabling Jailhouse:
 
-    - AMD Seattle / SoftIron Overdrive 3000
+	sudo sh -c 'echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor'
 
-    - LeMaker HiKey
 
-    - NVIDIA Jetson TX1 and TX2
+Jailhouse demonstration
+-----------------------
 
-    - Xilinx ZCU102 (ZynqMP evaluation board)
+The next steps show how to run a simple bare-metal application alongside Linux
+on the Jetson platform. You can easily adapt the commands to the TX2 platform
+by replacing the names in the commands.
 
-    - NXP MCIMX8M-EVK
+You can create a cell with a demonstration application as follows:
 
+	sudo jailhouse cell create jailhouse/configs/arm64/jetson-tx1-demo.cell
+	sudo jailhouse cell load jetson-tx1-demo jailhouse/inmates/demos/arm64/gic-demo.bin
+	sudo jailhouse cell start jetson-tx1-demo
 
-Software requirements
----------------------
-
-#### x86 architecture:
-
-  - x86-64 Linux kernel (tested against 3.14+)
-
-    - VT-d IOMMU usage (DMAR) has to be disabled in the Linux kernel, e.g. via
-      the command line parameter:
-
-          intel_iommu=off
-
-    - To exploit the faster x2APIC, interrupt remapping needs to be on in the
-      kernel (check for CONFIG_IRQ_REMAP)
-
-  - The hypervisor requires a contiguous piece of RAM for itself and each
-    additional cell. This currently has to be pre-allocated during boot-up.
-    On x86 this is typically done by adding
-
-        memmap=82M$0x3a000000
-
-    as parameter to the command line of the virtual machine's kernel. Note that
-    if you plan to put this parameter in GRUB2 variables in /etc/default/grub,
-    then you will need three escape characters before the dollar
-    (e.g. ```GRUB_CMDLINE_LINUX_DEFAULT="memmap=82M\\\$0x3a000000"```).
-
-#### ARM architecture:
-
-  - Linux kernel:
-    - 3.19+ for ARM
-    - 4.7+ for ARM64
-
-  - Appropriate boot loader support (typically U-Boot)
-     - Linux is started in HYP mode
-     - PSCI support for CPU offlining
-
-  - The hypervisor requires a contiguous piece of RAM for itself and each
-    additional cell. This currently has to be pre-allocated during boot-up.
-    On ARM this can be obtained by reducing the amount of memory seen by the
-    kernel (through the `mem=` kernel boot parameter) or by modifying the
-    Device Tree (i.e. the `reserved-memory` node).
-
-
-Build & Installation
---------------------
-
-Simply run `make`, optionally specifying the target kernel directory:
-
-    make [KDIR=/path/to/kernel/objects]
-
-
-#### Installation
-
-It is recommended to install all of Jailhouse on your target machine. That will
-take care of a kernel module, the firmware, tools etc. Just call
-
-    make install
-
-from the top-level directory.
-
-The traditional Linux cross-compilation (i.e. `ARCH=` and `CROSS_COMPILE=`) and
-installation (i.e. `DESTDIR=`) flags are supported as well.
-
-#### Running without Installation
-
-Except for the hypervisor image `jailhouse*.bin`, that has to be available in
-the firmware search path, you can run Jailhouse from the build directory.
-If you cannot or do not want to use `make install`, you can either install just
-the firmware using `make firmware_install` or customize the firmware search
-path:
-
-    echo -n /path/to/jailhouse/hypervisor/ \
-        > /sys/module/firmware_class/parameters/path
-
-
-Configuration
--------------
-
-Jailhouse requires one configuration file for the complete system and one for
-each additional cell besides the primary Linux. These .cell files have to be
-passed to the jailhouse command line tool for enabling the hypervisor or
-creating new cells.
-
-On x86 a system configuration can be created on the target system by running
-the following command:
-
-    jailhouse config create sysconfig.c
-
-In order to translate this into the required binary form, place this file in
-the configs/x86/ directory. The build system will pick up every .c file from
-there and generate a corresponding .cell file.
-
-On x86 the hardware capabilities can be validated by running
-
-    jailhouse hardware check sysconfig.cell
-
-providing the binary system configuration created for the target.
-
-Currently, there is no config generator for the ARM architecture; therefore the
-config file must be manually written by starting from the reference examples
-and checking hardware-specific datasheets, DTS and /proc entries.
-
-Depending on the target system, the C structures may require some adjustments to
-make Jailhouse work properly or to reduce the desired access rights of the Linux
-root cell.
-
-Configurations for additional (non-root) cells currently require manual
-creation. To study the structures, use one of the demo cell configurations files
-as reference, e.g. configs/x86/apic-demo.c or configs/x86/e1000-demo.c.
-
-
-x86 Demonstration in QEMU/KVM
------------------------------
-
-**NOTE**: You can also build and execute the following demo steps with the
-help of the jailhouse-images side project at
-https://github.com/siemens/jailhouse-images.
-
-The included system configuration qemu-x86.c can be used to run Jailhouse in
-QEMU/KVM virtual machine on x86 hosts (Intel and AMD are supported). Currently
-it requires Linux 4.4 or newer on the host side. QEMU version 2.8 or newer is
-required.
-
-You also need a Linux guest image with a recent kernel (tested with >= 3.9) and
-the ability to build a module for this kernel. Further steps depend on the type
-of CPU you have on your system.
-
-For Intel CPUs: Make sure the kvm-intel module was loaded with nested=1 to
-enable nested VMX support. Start the virtual machine as follows:
-
-    qemu-system-x86_64 -machine q35,kernel_irqchip=split -m 1G -enable-kvm \
-        -smp 4 -device intel-iommu,intremap=on,x-buggy-eim=on \
-        -cpu kvm64,-kvm_pv_eoi,-kvm_steal_time,-kvm_asyncpf,-kvmclock,+vmx \
-        -drive file=LinuxInstallation.img,format=raw|qcow2|...,id=disk,if=none \
-        -device ide-hd,drive=disk -serial stdio -serial vc \
-        -netdev user,id=net -device e1000e,addr=2.0,netdev=net \
-        -device intel-hda,addr=1b.0 -device hda-duplex
-
-For AMD CPUs: Make sure the kvm-amd module was loaded with nested=1 to enable
-nested SVM support. Start the virtual machine as follows:
-
-    qemu-system-x86_64 -machine q35 -m 1G -enable-kvm -smp 4 \
-        -cpu host,-kvm_pv_eoi,-kvm_steal_time,-kvm_asyncpf,-kvmclock \
-        -drive file=LinuxInstallation.img,format=raw|qcow2|...,id=disk,if=none \
-        -device ide-hd,drive=disk -serial stdio -serial vc \
-        -netdev user,id=net -device e1000e,addr=2.0,netdev=net \
-        -device intel-hda,addr=1b.0 -device hda-duplex
-
-Inside the VM, make sure that `jailhouse-*.bin`, generated by the build process,
-are available for firmware loading (typically /lib/firmware), see above for
-installation steps.
-
-The Jailhouse QEMU cell config will block use of the serial port by the guest
-OS, so make sure that the guest kernel command line does NOT have its console
-set to log to the serial port (ie remove any 'console=ttyS0' arguments from the
-grub config). Reboot the guest and load jailhouse.ko. Then enable Jailhouse
-like this:
-
-    jailhouse enable /path/to/qemu-x86.cell
-
-Next you can create a cell with a demonstration application as follows:
-
-    jailhouse cell create /path/to/apic-demo.cell
-    jailhouse cell load apic-demo /path/to/apic-demo.bin
-    jailhouse cell start apic-demo
-
-apic-demo.bin is left by the built process in the inmates/demos/x86 directory.
-This application will program the APIC timer interrupt to fire at 10 Hz,
-measuring the jitter against the PM timer and displaying the result on the
-console. Given that this demonstration runs in a virtual machine, obviously
-no decent latencies should be expected.
+This application will program a periodic timer interrupt, measuring the jitter
+and displaying the result on the console.
 
 After creation, cells are addressed via the command line tool by providing
 their names or their runtime-assigned IDs. You can obtain information about
 active cells this way:
 
-    jailhouse cell list
+	jailhouse cell list
 
-Cell destruction is performed by specifying the configuration file of the
-desired cell. This command will destroy the apic-demo:
+You can also obtain statistical information about the number of VM exists:
 
-    jailhouse cell destroy apic-demo
+	jailhouse cell stats jetson-tx1-demo
 
-Note that the first destruction or shutdown request on the apic-demo cell will
-fail. The reason is that this cell contains logic to demonstrate an ordered
-shutdown as well as the ability of a cell to reject shutdown requests.
+Cell destruction is performed through the following command:
 
-The apic-demo cell has another special property for demonstration purposes: As
-long as it is running, no cell reconfigurations can be performed - the
-apic-demo locks the hypervisor in this regard. In order to destroy another cell
-or create an additional one, shut down the apic-demo first.
+	sudo jailhouse cell destroy jetson-tx1-demo
 
-    jailhouse cell shutdown apic-demo  # call again if error is returned
+Finally, the jailhouse hypervisor can be disabled by typing:
 
-To demonstrate the execution of a second, non-Linux cell, issue the following
-commands:
-
-    jailhouse cell create /path/to/pci-demo.cell
-    jailhouse cell load pci-demo /path/to/pci-demo.bin \
-        -s "con-base=0x2f8" -a 0x1000
-    jailhouse cell start pci-demo
-
-The pci-demo will use the second serial port provided by QEMU. You will find
-its output in a virtual console of the QEMU window. The purpose of this demo is
-to show basic PCI device configuration and MSI handling.
-
-While cell configurations are locked, it is still possible, though, to reload
-the content of existing cell (provided they accept their shutdown first). To
-reload and restart the tiny-demo, issue the following commands:
-
-    jailhouse cell start apic-demo
-    jailhouse cell load pci-demo /path/to/pci-demo.bin \
-        -s "con-base=0x2f8" -a 0x1000
-    jailhouse cell start pci-demo
-
-Finally, Jailhouse is can be stopped completely again:
-
-    jailhouse disable  # call again on error due to running apic-demo
-
-All non-Linux cells running at that point will be destroyed, and resources
-will be returned to Linux.
+	sudo jailhouse disable
 
 
-ARM64 Demonstration in QEMU
----------------------------
+Toolchain selection
+-------------------
+The aarch64 toolchain available in Ubuntu's repositories (i.e.
+```gcc-aarch64-linux-gnu```) is suitable for cross-compiling all the various
+components: the Linux kernel, Jailhouse's firmware, Jailhouse's kernel driver,
+the inmate library and the inmate containing ERIKA.
+However, it relies on a libc library meant to be used on top of the Linux OS.
+This toolchain, therefore, is not suitable to build the Jailhouse's inmate
+library for bare-metal inmates using the libc services (e.g.  ```memcpy()```).
 
-Similarly like x86, Jailhouse can be tried out in a completely emulated ARM64
-(aarch64) environment under QEMU. QEMU version 2.10 and the following patch are
-required: https://patchwork.ozlabs.org/patch/817339. Later versions of QEMU
-should include a corresponding fix.
+Unfortunately, the Jailhouse hypervisor does not (yet) allow to select
+different toolchains for compiling the inmate library and the rest of the
+system. This possibility has been added specifically in this version of
+Jailhouse.
+If you need the inmate library to be compiled using a specific toolchain (e.g.
+[Linaro's aarch64-elf toolchain](https://releases.linaro.org/components/toolchain/binaries/latest/aarch64-elf/)
+just set the ```JAILHOUSE_INMATE_CC``` and ```JAILHOUSE_INMATE_LD```
+environment variables to the binaries that must be used. Obviously, this
+toolchain must be used for building also the inmate that will be linked against
+the inmate library.
 
-Start the QEMU machine like this:
 
-    qemu-system-aarch64 -cpu cortex-a57 -smp 4 -m 1G \
-        -machine virt,gic-version=3,virtualization=on -nographic \
-        -netdev user,id=net -device virtio-net-device,netdev=net \
-        -drive file=LinuxInstallation.img,format=raw|qcow2|...,id=disk,if=none \
-        -device virtio-blk-device,drive=disk \
-        -kernel /path/to/kernel-image -append "root=/dev/vda1 mem=768M"
+ERIKA3 RTOS
+-----------
 
-Jailhouse can be started after loading its kernel module. Run:
+Please, refer to the [ERIKA wiki page for Jetson](http://www.erika-enterprise.com/wiki/index.php?title=Nvidia_Jetson_TX1_and_TX2)
+for instructions about running the ERIKA3 RTOS on top of Jailhouse on the Jetson platforms.
 
-    jailhouse enable /path/to/qemu-arm64.cell
 
-The corresponding test to apic-demo on x86 is the gic-demo:
 
-    jailhouse cell create /path/to/qemu-arm64-gic-demo.cell
-    jailhouse cell load gic-demo /path/to/gic-demo.bin
-    jailhouse cell start gic-demo
+
