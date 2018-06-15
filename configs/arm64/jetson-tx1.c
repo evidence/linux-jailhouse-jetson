@@ -106,7 +106,7 @@ struct {
 		/* Graphics Host */ {
 			.phys_start = 0x54000000,
 			.virt_start = 0x54000000,
-			.size = 0x1000000,
+			.size = 0x3000000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
 				JAILHOUSE_MEM_IO,
 		},
