@@ -20,11 +20,31 @@
 #define PCI_CFG_BASE	(0x40000000)
 #endif
 
+static void pci_map_region(void);
+
+void pci_map_region(void)
+{
+	static u8 pci_region_mapped;
+
+	/* mapping region */
+	if(!pci_region_mapped){
+		pci_region_mapped = 1;
+		map_range((void*) PCI_CFG_BASE, 0x100000, MAP_UNCACHED);
+	}
+}
+
+
 
 u32 pci_read_config(u16 bdf, unsigned int addr, unsigned int size)
 {
+
 	/*u32 reg_addr originally*/
-	u64 reg_addr = PCI_CFG_BASE | ((u32)bdf << 12) | (addr & 0xfc);
+	u64 reg_addr = 0;
+
+	/* Mapping the PCI configuration space before accessing it*/
+	pci_map_region();
+
+	reg_addr = PCI_CFG_BASE | ((u32)bdf << 12) | (addr & 0xfc);
 	//printk("%s(bdf:0x%x, addr:%p, size:0x%x), reg_addr0x%x\n", __func__, bdf, addr, size, reg_addr);
 	switch (size) {
 	case 1:
@@ -40,8 +60,14 @@ u32 pci_read_config(u16 bdf, unsigned int addr, unsigned int size)
 
 void pci_write_config(u16 bdf, unsigned int addr, u32 value, unsigned int size)
 {
+
 	/* u32 reg_addr  originally */
-	u64 reg_addr = PCI_CFG_BASE | ((u32)bdf << 12) | (addr & 0xfc);
+	u64 reg_addr = 0;
+
+	/* Mapping the PCI configuration space before accessing it*/
+	pci_map_region();
+
+	reg_addr = PCI_CFG_BASE | ((u32)bdf << 12) | (addr & 0xfc);
 	//printk("%s(bdf:0x%x, addr:%p, value:0x%x, size:0x%x), reg_addr0x%x\n", __func__, bdf, addr, value, size, reg_addr);
 
 	switch (size) {
