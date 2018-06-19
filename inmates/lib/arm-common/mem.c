@@ -39,7 +39,7 @@
 #include <inmate.h>
 #include <asm/sysregs.h>
 
-static u64 __attribute__((aligned(4096))) page_directory[4];
+static u64 __attribute__((aligned(4096))) page_directory[10];
 
 void map_range(void *start, unsigned long size, enum map_type map_type)
 {
