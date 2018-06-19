@@ -30,7 +30,6 @@ struct {
 		.num_memory_regions = ARRAY_SIZE(config.mem_regions),
 		.num_irqchips = ARRAY_SIZE(config.irqchips),
 		.num_pci_devices = ARRAY_SIZE(config.pci_devices),
-		/* FIXME: add IRQ for pci */
 		.vpci_irq_base = 300,
 
 	},
@@ -50,7 +49,7 @@ struct {
 		/* RAM */ {
 			.phys_start = 0x270000000,
 			.virt_start = 0,
-			.size = 0x1000000,
+			.size = 0x10000,
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
 				JAILHOUSE_MEM_EXECUTE | JAILHOUSE_MEM_LOADABLE,
 		},
@@ -91,7 +90,6 @@ struct {
 		},
 	},
 
-	/* FIXME: add irqchips section */
 	.pci_devices = {
                 {
                         .type = JAILHOUSE_PCI_TYPE_IVSHMEM,
@@ -103,7 +101,7 @@ struct {
 
                         /*num_msix_vectors needs to be 0 for INTx operation*/
                         .num_msix_vectors = 0,
-                        .shmem_region = 2,
+                        .shmem_region = 3,
                         .shmem_protocol = JAILHOUSE_SHMEM_PROTO_UNDEFINED,
                         .domain = 0x0,
                 },
@@ -118,7 +116,7 @@ struct {
 
                         /*num_msix_vectors needs to be 0 for INTx operation*/
                         .num_msix_vectors = 0,
-                        .shmem_region = 3,
+                        .shmem_region = 4,
                         .shmem_protocol = JAILHOUSE_SHMEM_PROTO_UNDEFINED,
 			.domain = 0x0,
                 },

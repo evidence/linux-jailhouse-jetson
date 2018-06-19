@@ -86,6 +86,7 @@ static int map_shmem_and_bars(struct ivshmem_dev_data *d)
 
 	pci_write_config(d->bdf, PCI_CFG_COMMAND,
 			 (PCI_CMD_MEM | PCI_CMD_MASTER), 2);
+	map_range(d->shmem, d->shmemsz + PAGE_SIZE + d->bar2sz, MAP_UNCACHED);
 	return 0;
 }
 
@@ -136,7 +137,7 @@ void inmate_main(void)
 		printk("IVSHMEM: Found %04x:%04x at %02x:%02x.%x\n",
 		       pci_read_config(bdf, PCI_CFG_VENDOR_ID, 2),
 		       pci_read_config(bdf, PCI_CFG_DEVICE_ID, 2),
-		       bdf >> 8, (bdf >> 3) & 0x1f, bdf & 0x3);
+		       bdf >> 8, (bdf >> 3) & 0x1f, bdf & 0x7);
 		class_rev = pci_read_config(bdf, 0x8, 4);
 		if (class_rev != (PCI_DEV_CLASS_OTHER << 24 |
 				  JAILHOUSE_SHMEM_PROTO_UNDEFINED << 8)) {
