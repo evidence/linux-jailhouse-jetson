@@ -217,6 +217,10 @@ ERIKA3 RTOS
 
 Please, refer to the [ERIKA wiki page for Jetson](http://www.erika-enterprise.com/wiki/index.php?title=Nvidia_Jetson_TX1_and_TX2)
 for instructions about running the ERIKA3 RTOS on top of Jailhouse on the Jetson platforms.
+Note that a VirtualBox virtual machine with the whole development environment
+already installed (i.e. compiler, Jailhouse, ERIKA RTOS, RT-Druid) for both
+TX1 and TX2 is available on the
+[ERIKA website](http://www.erika-enterprise.com/index.php/download/virtual-machines.html).
 
 
 
