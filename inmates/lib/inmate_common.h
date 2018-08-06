@@ -40,6 +40,10 @@
 #define CONFIG_INMATE_BASE	0x0
 #endif
 
+#ifdef __cplusplus
+extern "C"{
+#endif
+
 #define NULL			((void *)0)
 
 #define NS_PER_USEC		1000UL
@@ -59,7 +63,9 @@ typedef u32 __u32;
 typedef s64 __s64;
 typedef u64 __u64;
 
+#ifndef __cplusplus
 typedef enum { true = 1, false = 0 } bool;
+#endif
 
 #include <jailhouse/hypercall.h>
 
@@ -101,5 +107,9 @@ extern const char cmdline[];
 extern const char stack_top[];
 
 void inmate_main(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* !__ASSEMBLY__ */
