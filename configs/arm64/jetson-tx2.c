@@ -26,7 +26,7 @@
 struct {
 	struct jailhouse_system header;
 	__u64 cpus[1];
-	struct jailhouse_memory mem_regions[64];
+	struct jailhouse_memory mem_regions[66];
 	struct jailhouse_irqchip irqchips[3];
 	struct jailhouse_pci_device pci_devices[2];
 } __attribute__((packed)) config = {
@@ -361,6 +361,20 @@ struct {
 			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
 				JAILHOUSE_MEM_EXECUTE,
 		},
+		/*CAN 1, CAN2 */ {
+			.phys_start = 0x0c310000,
+			.virt_start = 0x0c310000,
+			.size = 0x20000,
+			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+				JAILHOUSE_MEM_EXECUTE,
+		},
+		/*PWM4 (FAN) */ {
+			.phys_start = 0x0c340000,
+			.virt_start = 0x0c340000,
+			.size = 0x10000,
+			.flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+				JAILHOUSE_MEM_EXECUTE,
+		},
 		/* PMC */ {
 			.phys_start = 0x0c360000,
 			.virt_start = 0x0c360000,
@@ -566,7 +580,7 @@ struct {
 
                         /*num_msix_vectors needs to be 0 for INTx operation*/
                         .num_msix_vectors = 0,
-                        .shmem_region = 62,
+                        .shmem_region = 64,
                         .shmem_protocol = JAILHOUSE_SHMEM_PROTO_UNDEFINED,
                         .domain = 0x0,
 
@@ -582,7 +596,7 @@ struct {
 
                         /*num_msix_vectors needs to be 0 for INTx operation*/
                         .num_msix_vectors = 0,
-                        .shmem_region = 63,
+                        .shmem_region = 65,
                         .shmem_protocol = JAILHOUSE_SHMEM_PROTO_UNDEFINED,
 			.domain = 0x0,
 
