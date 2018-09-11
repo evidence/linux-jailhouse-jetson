@@ -92,10 +92,18 @@ static void jailhouse_pci_add_device(const struct jailhouse_pci_device *dev)
 static void jailhouse_pci_remove_device(const struct jailhouse_pci_device *dev)
 {
 	struct pci_dev *l_dev;
+	struct pci_bus *bus = NULL;;
+
+	bus = pci_find_bus(dev->domain, PCI_BUS_NUM(dev->bdf));
 
 	l_dev = pci_get_bus_and_slot(PCI_BUS_NUM(dev->bdf), dev->bdf & 0xff);
 	if (l_dev)
 		pci_stop_and_remove_bus_device_locked(l_dev);
+
+	/* Deleting the bus. Note: this will be re-created*/
+	if(bus)
+		pci_remove_root_bus(bus);
+
 }
 
 static void jailhouse_pci_claim_release(const struct jailhouse_pci_device *dev,
